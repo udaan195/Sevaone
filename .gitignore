@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+android/
+ios/
+dist/
+node_modules/
+.expo/
+dist/
+google-services.json
+service-account.json
