@@ -1,14 +1,17 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+// AUTO-REDIRECT — Yeh screen ab JobList use karti hai
+// Purana placeholder tha — ab actual data dikhata hai
+import React, { useEffect } from 'react';
+import { View, ActivityIndicator } from 'react-native';
 
-export default function Results() {
+export default function Results({ navigation, route }) {
+  useEffect(() => {
+    // Seedha JobList pe redirect karo sahi category ke saath
+    navigation.replace('JobList', { category: 'result' });
+  }, []);
+
   return (
-    <View style={styles.center}>
-      <Text style={styles.text}>Results Section Ready!</Text>
+    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F8FAFC' }}>
+      <ActivityIndicator size="large" color="#003366" />
     </View>
   );
 }
-const styles = StyleSheet.create({
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  text: { fontSize: 18, fontWeight: 'bold' }
-});

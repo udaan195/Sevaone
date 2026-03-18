@@ -1,183 +1,466 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  View, Text, StyleSheet, ScrollView, TouchableOpacity, 
-  SafeAreaView, Alert, ActivityIndicator 
+import {
+  View, Text, StyleSheet, ScrollView, TouchableOpacity,
+  SafeAreaView, Alert, ActivityIndicator, Switch, Image,
 } from 'react-native';
 import { db, auth } from '../../api/firebaseConfig';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { signOut, sendPasswordResetEmail } from 'firebase/auth';
+import {
+  doc, onSnapshot, updateDoc, setDoc,
+  collection, query, where, getDocs
+} from 'firebase/firestore';
+import { signOut } from 'firebase/auth';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useAppTheme } from '../../context/ThemeContext';
+import * as ImagePicker from 'expo-image-picker';
+import Constants from 'expo-constants';
+
+const CLOUD_NAME    = Constants?.expoConfig?.extra?.cloudinaryCloudName    || 'dxuurwexl';
+const UPLOAD_PRESET = Constants?.expoConfig?.extra?.cloudinaryUploadPreset || 'edusphere_uploads';
+const APP_VERSION   = Constants?.expoConfig?.version || '1.0.0';
 
 export default function ProfileScreen({ navigation }) {
-  const [userData, setUserData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { theme, isDark, toggleTheme, lang, toggleLang, t } = useAppTheme();
+  const [userData, setUserData]       = useState(null);
+  const [loading, setLoading]         = useState(true);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [appCount, setAppCount]       = useState(0);
   const user = auth.currentUser;
 
+  // ── Real-time user data ──────────────────────────────────
   useEffect(() => {
     if (!user) return;
-    const unsub = onSnapshot(doc(db, "users", user.uid), (docSnap) => {
-      if (docSnap.exists()) {
-        setUserData(docSnap.data());
-      }
+    const unsub = onSnapshot(doc(db, 'users', user.uid), snap => {
+      if (snap.exists()) setUserData(snap.data());
       setLoading(false);
     });
     return () => unsub();
   }, [user]);
 
-  const maskEmail = (email) => {
-    if (!email) return "No Email Found";
+  // ── Applications count (jobs + services) ─────────────────
+  useEffect(() => {
+    if (!user) return;
+    const fetchCount = async () => {
+      try {
+        const [jobSnap, svcSnap] = await Promise.all([
+          getDocs(query(collection(db, 'applications'),         where('userId', '==', user.uid))),
+          getDocs(query(collection(db, 'service_applications'), where('userId', '==', user.uid))),
+        ]);
+        setAppCount(jobSnap.size + svcSnap.size);
+      } catch {}
+    };
+    fetchCount();
+  }, [user]);
+
+  // ── Helpers ───────────────────────────────────────────────
+  const maskEmail = email => {
+    if (!email) return 'Email not set';
     const [name, domain] = email.split('@');
     if (name.length <= 2) return `${name}***@${domain}`;
-    return `${name.substring(0, 2)}***${name.substring(name.length - 1)}@${domain}`;
+    return `${name.substring(0, 2)}***${name.slice(-1)}@${domain}`;
   };
 
-  const handleChangePassword = () => {
-    const targetEmail = userData?.email || user.email;
-    const masked = maskEmail(targetEmail);
-    Alert.alert(
-      "Password Reset",
-      `Bhai, kya hum aapki email (${masked}) par reset link bhej dein?`,
-      [
-        { text: "Nahi", style: "cancel" },
-        { 
-          text: "Haan, Bhejo", 
-          onPress: () => {
-            sendPasswordResetEmail(auth, targetEmail)
-              .then(() => Alert.alert("Success ✅", `Link bhej diya gaya hai.`))
-              .catch(() => Alert.alert("Error", "Bhai, link bhejne mein error aaya."));
-          } 
-        }
-      ]
-    );
+  const formatDate = ts => {
+    if (!ts) return '—';
+    try {
+      const d = ts?.toDate ? ts.toDate() : new Date(ts);
+      return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    } catch { return '—'; }
   };
 
+  const memberId = user?.uid?.substring(0, 8).toUpperCase() || '—';
+
+  // ── Profile Photo Upload ──────────────────────────────────
+  const handlePhotoUpload = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        return Alert.alert('Permission', 'Gallery access chahiye photo upload ke liye.');
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.6,
+      });
+      if (result.canceled) return;
+
+      setPhotoUploading(true);
+      const uri  = result.assets[0].uri;
+      const data = new FormData();
+      data.append('file', { uri, type: 'image/jpeg', name: 'profile.jpg' });
+      data.append('upload_preset', UPLOAD_PRESET);
+
+      const res  = await fetch(
+        `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`,
+        { method: 'POST', body: data }
+      );
+      const json = await res.json();
+
+      if (json.secure_url) {
+        const uRef = doc(db, 'users', user.uid);
+        await updateDoc(uRef, { photoURL: json.secure_url })
+          .catch(async () => {
+            await setDoc(uRef, { photoURL: json.secure_url }, { merge: true });
+          });
+        Alert.alert('✅', 'Profile photo update ho gayi!');
+      } else {
+        Alert.alert('Error', 'Upload failed. Try again.');
+      }
+    } catch (e) {
+      Alert.alert('Error', 'Photo upload nahi ho saka.');
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
+
+  // ── Password Reset ────────────────────────────────────────
+  // Password change → dedicated screen
+
+  // ── Logout ────────────────────────────────────────────────
   const handleLogout = () => {
-    Alert.alert("Logout", "Bhai, kya aap logout karna chahte hain?", [
-      { text: "Nahi", style: "cancel" },
-      { text: "Haan", onPress: () => signOut(auth) }
+    Alert.alert(t.logout || 'Logout', 'Kya aap logout karna chahte hain?', [
+      { text: t.cancel || 'Cancel', style: 'cancel' },
+      { text: 'Haan', style: 'destructive', onPress: () => signOut(auth) },
     ]);
   };
 
-  if (loading) return (
-    <View style={styles.center}><ActivityIndicator size="large" color="#003366" /></View>
-  );
+  const s = makeStyles(theme);
+
+  if (loading) {
+    return (
+      <View style={[s.center, { backgroundColor: theme.bg }]}>
+        <ActivityIndicator size="large" color={theme.primary} />
+      </View>
+    );
+  }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView showsVerticalScrollIndicator={false}>
-        
-        {/* Header Section */}
-        <View style={styles.header}>
-          <View style={styles.avatarBox}><MaterialCommunityIcons name="account-tie" size={55} color="#fff" /></View>
-          <Text style={styles.userName}>{userData?.name || "Member Name"}</Text>
-          <View style={styles.verifiedBadge}>
-            <MaterialCommunityIcons name="check-decagram" size={16} color="#10B981" />
-            <Text style={styles.verifiedText}>Verified SewaOne Member</Text>
-          </View>
-          <Text style={styles.userEmail}>{userData?.email || user?.email}</Text>
-          <TouchableOpacity style={styles.editProfileBtn} onPress={() => navigation.navigate('EditProfile', { currentData: userData })}>
-            <MaterialCommunityIcons name="account-edit" size={20} color="#003366" /><Text style={styles.editBtnText}>Update Profile Details</Text>
+    <SafeAreaView style={[s.container, { backgroundColor: theme.bg }]}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
+
+        {/* ── Header ── */}
+        <View style={[s.header, { backgroundColor: theme.card }]}>
+
+          {/* Avatar with upload */}
+          <TouchableOpacity onPress={handlePhotoUpload} activeOpacity={0.85} style={s.avatarWrap}>
+            {userData?.photoURL ? (
+              <Image source={{ uri: userData.photoURL }} style={s.avatarImg} />
+            ) : (
+              <View style={[s.avatarPlaceholder, { backgroundColor: theme.primary }]}>
+                <MaterialCommunityIcons name="account-tie" size={50} color="#fff" />
+              </View>
+            )}
+            <View style={[s.cameraBadge, { backgroundColor: theme.success }]}>
+              {photoUploading
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <MaterialCommunityIcons name="camera" size={14} color="#fff" />
+              }
+            </View>
           </TouchableOpacity>
-        </View>
 
-        {/* Identity Details */}
-        <View style={styles.infoSection}>
-          <Text style={styles.sectionTitle}>Identity Details</Text>
-          <View style={styles.infoCard}>
-            <InfoRow icon="phone" label="Phone" value={userData?.phone || "Not Set"} />
-            <InfoRow icon="map-marker" label="City & State" value={`${userData?.city || 'Not Set'}, ${userData?.state || 'Not Set'}`} />
-            <InfoRow icon="mailbox" label="Pincode" value={userData?.pincode || "Not Set"} />
+          <Text style={[s.userName, { color: theme.text }]}>
+            {userData?.name || 'Member'}
+          </Text>
+
+          <View style={[s.verifiedBadge, { backgroundColor: isDark ? '#064e3b' : '#F0FDF4' }]}>
+            <MaterialCommunityIcons name="check-decagram" size={14} color={theme.success} />
+            <Text style={[s.verifiedText, { color: theme.success }]}>
+              {t.verifiedMember || 'Verified Member'}
+            </Text>
           </View>
-        </View>
 
-        {/* ✨ NEW: Refer & Earn Professional Card */}
-        <View style={{ paddingHorizontal: 20, marginBottom: 10 }}>
-          <TouchableOpacity 
-            style={styles.referCard} 
-            onPress={() => navigation.navigate('ReferEarn')}
+          <Text style={[s.userEmail, { color: theme.textMuted }]}>
+            {maskEmail(userData?.email || user?.email)}
+          </Text>
+
+          <TouchableOpacity
+            style={[s.editBtn, { borderColor: theme.primary, backgroundColor: theme.surface }]}
+            onPress={() => navigation.navigate('EditProfile', { currentData: userData })}
           >
-            <View style={styles.referIconCircle}>
-              <MaterialCommunityIcons name="gift" size={28} color="#fff" />
+            <MaterialCommunityIcons name="account-edit" size={18} color={theme.primary} />
+            <Text style={[s.editBtnText, { color: theme.primary }]}>
+              {t.editProfile || 'Edit Profile'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* ── Stats Row ── */}
+        <View style={[s.statsRow, { backgroundColor: theme.card }]}>
+          <StatCard
+            icon="file-document-multiple"
+            value={appCount.toString()}
+            label="Applications"
+            color="#3B82F6"
+            theme={theme}
+          />
+          <View style={[s.statDivider, { backgroundColor: theme.border }]} />
+          <StatCard
+            icon="wallet"
+            value={`₹${userData?.walletBalance || 0}`}
+            label="Wallet"
+            color="#10B981"
+            theme={theme}
+            onPress={() => navigation.navigate('Home', { screen: 'Wallet' })}
+          />
+          <View style={[s.statDivider, { backgroundColor: theme.border }]} />
+          <StatCard
+            icon="identifier"
+            value={memberId}
+            label="Member ID"
+            color="#8B5CF6"
+            theme={theme}
+            mono
+          />
+        </View>
+
+        {/* ── Identity Details ── */}
+        <View style={s.section}>
+          <Text style={[s.sectionTitle, { color: theme.textMuted }]}>
+            {t.identityDetails || 'IDENTITY DETAILS'}
+          </Text>
+          <View style={[s.card, { backgroundColor: theme.card }]}>
+            <InfoRow icon="phone"      label="Phone"       value={userData?.phone   || 'Not Set'} theme={theme} />
+            <InfoRow icon="map-marker" label="City & State" value={`${userData?.city || '—'}, ${userData?.state || '—'}`} theme={theme} />
+            <InfoRow icon="mailbox"    label="Pincode"     value={userData?.pincode || 'Not Set'} theme={theme} />
+            <InfoRow icon="calendar"   label="Member Since" value={formatDate(userData?.createdAt)} theme={theme} last />
+          </View>
+        </View>
+
+        {/* ── Wallet Quick Card ── */}
+        <View style={s.section}>
+          <TouchableOpacity
+            style={[s.walletCard, { backgroundColor: '#002855' }]}
+            onPress={() => navigation.navigate('Home', { screen: 'Wallet' })}
+            activeOpacity={0.88}
+          >
+            <View style={s.walletLeft}>
+              <MaterialCommunityIcons name="wallet" size={28} color="#FFD700" />
+              <View style={{ marginLeft: 14 }}>
+                <Text style={s.walletLabel}>SewaOne Wallet</Text>
+                <Text style={s.walletBalance}>
+                  ₹{userData?.walletBalance || 0}
+                </Text>
+              </View>
             </View>
-            <View style={{ flex: 1, marginLeft: 15 }}>
-              <Text style={styles.referTitle}>Refer & Earn ₹25</Text>
-              <Text style={styles.referSub}>Invite friends and get rewards!</Text>
-            </View>
-            <View style={styles.codeBadge}>
-              <Text style={styles.codeBadgeText}>{userData?.myReferralCode || "GET CODE"}</Text>
+            <View style={s.walletRight}>
+              <Text style={s.walletAdd}>+ Add Money</Text>
+              <MaterialCommunityIcons name="chevron-right" size={20} color="rgba(255,255,255,0.6)" />
             </View>
           </TouchableOpacity>
         </View>
 
-        {/* Menu Options */}
-        <View style={styles.menuContainer}>
-          <Text style={styles.sectionTitle}>Account & Settings</Text>
-          <MenuOption icon="history" title="My Application History" onPress={() => navigation.navigate('ApplicationsScreen')} />
-          <MenuOption icon="lock-reset" title="Change Password" onPress={handleChangePassword} />
-          <MenuOption icon="shield-lock" title="Privacy Policy" onPress={() => navigation.navigate('PrivacyPolicy')} />
-
-          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-            <MaterialCommunityIcons name="logout" size={24} color="#EF4444" />
-            <Text style={styles.logoutText}>Logout From Device</Text>
+        {/* ── Refer & Earn ── */}
+        <View style={[s.section, { paddingBottom: 0 }]}>
+          <TouchableOpacity
+            style={[s.referCard, { backgroundColor: theme.primary }]}
+            onPress={() => navigation.navigate('ReferEarn')}
+            activeOpacity={0.88}
+          >
+            <View style={s.referIconCircle}>
+              <MaterialCommunityIcons name="gift" size={26} color="#fff" />
+            </View>
+            <View style={{ flex: 1, marginLeft: 14 }}>
+              <Text style={s.referTitle}>{t.referEarn || 'Refer & Earn'} ₹25</Text>
+              <Text style={s.referSub}>Invite friends — rewards kamao!</Text>
+            </View>
+            <View style={[s.codeBadge, { backgroundColor: theme.success }]}>
+              <Text style={s.codeBadgeText}>
+                {userData?.myReferralCode || 'GET CODE'}
+              </Text>
+            </View>
           </TouchableOpacity>
         </View>
-        
-        <View style={{ height: 100 }} />
+
+        {/* ── Settings ── */}
+        <View style={s.section}>
+          <Text style={[s.sectionTitle, { color: theme.textMuted }]}>
+            {t.accountSettings || 'ACCOUNT SETTINGS'}
+          </Text>
+
+          <MenuOption icon="history"      iconColor="#3B82F6" title={t.myApplications || 'My Applications'} theme={theme}
+            onPress={() => navigation.navigate('ApplicationsScreen')} />
+          <MenuOption icon="lock-reset"   iconColor="#F59E0B" title={t.changePassword  || 'Change Password'} theme={theme}
+            onPress={() => navigation.navigate('ChangePassword')} />
+          <MenuOption icon="shield-lock"  iconColor="#8B5CF6" title={t.privacyPolicy   || 'Privacy Policy'}  theme={theme}
+            onPress={() => navigation.navigate('PrivacyPolicy')} />
+          <MenuOption icon="help-circle"  iconColor="#10B981" title="Help & Support" theme={theme}
+            onPress={() => navigation.navigate('HelpScreen')} />
+
+          {/* Dark Mode */}
+          <View style={[s.optionRow, { backgroundColor: theme.card }]}>
+            <View style={s.optionLeft}>
+              <View style={[s.optionIconBox, { backgroundColor: isDark ? '#1E3A5F' : '#EBF5FB' }]}>
+                <MaterialCommunityIcons
+                  name={isDark ? 'weather-night' : 'weather-sunny'}
+                  size={20} color={isDark ? '#60A5FA' : '#F59E0B'}
+                />
+              </View>
+              <Text style={[s.optionText, { color: theme.text }]}>Dark Mode</Text>
+            </View>
+            <Switch
+              value={isDark}
+              onValueChange={toggleTheme}
+              trackColor={{ false: theme.border, true: theme.primary }}
+              thumbColor="#fff"
+            />
+          </View>
+
+          {/* Language */}
+          <View style={[s.optionRow, { backgroundColor: theme.card }]}>
+            <View style={s.optionLeft}>
+              <View style={[s.optionIconBox, { backgroundColor: '#F0FDF4' }]}>
+                <MaterialCommunityIcons name="translate" size={20} color="#10B981" />
+              </View>
+              <Text style={[s.optionText, { color: theme.text }]}>Language / भाषा</Text>
+            </View>
+            <TouchableOpacity
+              onPress={toggleLang}
+              style={[s.langBtn, { backgroundColor: theme.primary }]}
+            >
+              <Text style={s.langBtnText}>{lang === 'en' ? 'EN → हिं' : 'हिं → EN'}</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* App Version */}
+          <View style={[s.optionRow, { backgroundColor: theme.card }]}>
+            <View style={s.optionLeft}>
+              <View style={[s.optionIconBox, { backgroundColor: '#F1F5F9' }]}>
+                <MaterialCommunityIcons name="information-outline" size={20} color="#64748B" />
+              </View>
+              <Text style={[s.optionText, { color: theme.text }]}>App Version</Text>
+            </View>
+            <Text style={[s.versionText, { color: theme.textMuted }]}>v{APP_VERSION}</Text>
+          </View>
+
+          {/* Logout */}
+          <TouchableOpacity
+            style={[s.logoutBtn, { backgroundColor: isDark ? '#450a0a' : '#FEE2E2' }]}
+            onPress={handleLogout}
+          >
+            <MaterialCommunityIcons name="logout" size={22} color={theme.danger} />
+            <Text style={[s.logoutText, { color: theme.danger }]}>Logout From Device</Text>
+          </TouchableOpacity>
+        </View>
+
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-// Sub-components remains same
-const InfoRow = ({ icon, label, value }) => (
-  <View style={styles.infoRow}>
-    <MaterialCommunityIcons name={icon} size={20} color="#64748B" />
-    <View style={{ marginLeft: 15 }}>
-      <Text style={styles.infoLabel}>{label}</Text>
-      <Text style={styles.infoValue}>{value}</Text>
+// ── Sub Components ────────────────────────────────────────
+const StatCard = ({ icon, value, label, color, theme, onPress, mono }) => (
+  <TouchableOpacity
+    style={styles.statCard}
+    onPress={onPress}
+    disabled={!onPress}
+    activeOpacity={onPress ? 0.7 : 1}
+  >
+    <MaterialCommunityIcons name={icon} size={20} color={color} />
+    <Text style={[styles.statValue, { color: theme.text, fontFamily: mono ? 'monospace' : undefined, fontSize: mono ? 12 : 18 }]}>
+      {value}
+    </Text>
+    <Text style={[styles.statLabel, { color: theme.textMuted }]}>{label}</Text>
+  </TouchableOpacity>
+);
+
+const InfoRow = ({ icon, label, value, theme, last }) => (
+  <View style={[styles.infoRow, !last && { borderBottomWidth: 1, borderBottomColor: theme.border }]}>
+    <View style={[styles.infoIconBox, { backgroundColor: theme.bg || '#F0F4FF' }]}>
+      <MaterialCommunityIcons name={icon} size={16} color={theme.textMuted} />
+    </View>
+    <View style={{ flex: 1, marginLeft: 12 }}>
+      <Text style={[styles.infoLabel, { color: theme.textMuted }]}>{label}</Text>
+      <Text style={[styles.infoValue, { color: theme.text }]}>{value}</Text>
     </View>
   </View>
 );
 
-const MenuOption = ({ icon, title, onPress }) => (
-  <TouchableOpacity style={styles.optionRow} onPress={onPress}>
-    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-      <MaterialCommunityIcons name={icon} size={22} color="#475569" />
-      <Text style={styles.optionText}>{title}</Text>
+const MenuOption = ({ icon, iconColor, title, onPress, theme }) => (
+  <TouchableOpacity
+    style={[styles.menuOption, { backgroundColor: theme.card }]}
+    onPress={onPress}
+    activeOpacity={0.75}
+  >
+    <View style={styles.optionLeft}>
+      <View style={[styles.optionIconBox, { backgroundColor: iconColor + '20' }]}>
+        <MaterialCommunityIcons name={icon} size={20} color={iconColor} />
+      </View>
+      <Text style={[styles.optionText, { color: theme.text }]}>{title}</Text>
     </View>
-    <MaterialCommunityIcons name="chevron-right" size={22} color="#CBD5E1" />
+    <MaterialCommunityIcons name="chevron-right" size={20} color={theme.border} />
   </TouchableOpacity>
 );
 
+// Static styles (non-theme)
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: { alignItems: 'center', padding: 30, backgroundColor: '#fff', borderBottomLeftRadius: 40, borderBottomRightRadius: 40, elevation: 2 },
-  avatarBox: { width: 90, height: 90, borderRadius: 45, backgroundColor: '#003366', justifyContent: 'center', alignItems: 'center', marginBottom: 15 },
-  userName: { fontSize: 22, fontWeight: '900', color: '#003366' },
-  verifiedBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0FDF4', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20, marginTop: 8 },
-  verifiedText: { color: '#10B981', fontSize: 11, fontWeight: '800', marginLeft: 5 },
-  userEmail: { fontSize: 13, color: '#94A3B8', marginTop: 5, fontWeight: '700' },
-  editProfileBtn: { flexDirection: 'row', alignItems: 'center', marginTop: 20, paddingVertical: 10, paddingHorizontal: 20, borderRadius: 15, borderWidth: 1.5, borderColor: '#003366', backgroundColor: '#F0F7FF' },
-  editBtnText: { marginLeft: 10, color: '#003366', fontWeight: '800' },
-  infoSection: { padding: 20 },
-  sectionTitle: { fontSize: 13, fontWeight: '900', color: '#94A3B8', textTransform: 'uppercase', marginBottom: 15 },
-  infoCard: { backgroundColor: '#fff', padding: 20, borderRadius: 25, elevation: 1 },
-  infoRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
-  infoLabel: { fontSize: 10, color: '#94A3B8', fontWeight: '800' },
-  infoValue: { fontSize: 14, fontWeight: '700', color: '#1E293B' },
-  
-  // ✨ Refer Card Professional Styles
-  referCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#003366', padding: 20, borderRadius: 25, elevation: 3 },
-  referIconCircle: { width: 50, height: 50, borderRadius: 25, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
-  referTitle: { color: '#fff', fontSize: 16, fontWeight: '900' },
-  referSub: { color: 'rgba(255,255,255,0.7)', fontSize: 11, fontWeight: '600', marginTop: 2 },
-  codeBadge: { backgroundColor: '#10B981', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
-  codeBadgeText: { color: '#fff', fontSize: 10, fontWeight: '900' },
-
-  menuContainer: { paddingHorizontal: 20 },
-  optionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fff', padding: 18, borderRadius: 20, marginBottom: 10, elevation: 1 },
-  optionText: { marginLeft: 15, fontSize: 14, fontWeight: '700', color: '#334155' },
-  logoutBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 10, padding: 18, backgroundColor: '#FEE2E2', borderRadius: 20 },
-  logoutText: { color: '#EF4444', fontWeight: '900', marginLeft: 10 }
+  statCard:    { flex: 1, alignItems: 'center', paddingVertical: 14, gap: 4 },
+  statValue:   { fontWeight: '900', marginTop: 4 },
+  statLabel:   { fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.3 },
+  infoRow:     { flexDirection: 'row', alignItems: 'center', paddingVertical: 12 },
+  infoIconBox: { width: 32, height: 32, borderRadius: 9, justifyContent: 'center', alignItems: 'center' },
+  infoLabel:   { fontSize: 10, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.3 },
+  infoValue:   { fontSize: 14, fontWeight: '700', marginTop: 1 },
+  menuOption:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderRadius: 18, marginBottom: 10, elevation: 1 },
+  optionLeft:  { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  optionIconBox: { width: 36, height: 36, borderRadius: 11, justifyContent: 'center', alignItems: 'center' },
+  optionText:  { fontSize: 14, fontWeight: '700' },
 });
+
+function makeStyles(theme) {
+  return StyleSheet.create({
+    container: { flex: 1 },
+    center:    { flex: 1, justifyContent: 'center', alignItems: 'center' },
+
+    // Header
+    header: { alignItems: 'center', padding: 28, paddingTop: 32, borderBottomLeftRadius: 36, borderBottomRightRadius: 36, elevation: 3 },
+
+    // Avatar
+    avatarWrap:        { position: 'relative', marginBottom: 14 },
+    avatarImg:         { width: 96, height: 96, borderRadius: 48, borderWidth: 3, borderColor: theme.primary },
+    avatarPlaceholder: { width: 96, height: 96, borderRadius: 48, justifyContent: 'center', alignItems: 'center' },
+    cameraBadge:       { position: 'absolute', bottom: 2, right: 2, width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: theme.card },
+
+    userName:     { fontSize: 22, fontWeight: '900', color: theme.text },
+    verifiedBadge:{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20, marginTop: 6 },
+    verifiedText: { fontSize: 11, fontWeight: '800', marginLeft: 4 },
+    userEmail:    { fontSize: 12, marginTop: 4, fontWeight: '600' },
+    editBtn:      { flexDirection: 'row', alignItems: 'center', marginTop: 18, paddingVertical: 9, paddingHorizontal: 20, borderRadius: 14, borderWidth: 1.5, gap: 8 },
+    editBtnText:  { fontWeight: '800', fontSize: 13 },
+
+    // Stats row
+    statsRow: { flexDirection: 'row', marginHorizontal: 16, marginTop: 16, borderRadius: 20, elevation: 2, overflow: 'hidden' },
+    statDivider: { width: 1 },
+
+    // Sections
+    section: { paddingHorizontal: 16, marginTop: 16 },
+    sectionTitle: { fontSize: 11, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 },
+    card: { borderRadius: 20, paddingHorizontal: 16, paddingVertical: 4, elevation: 1 },
+
+    // Wallet card
+    walletCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 18, borderRadius: 20, elevation: 4 },
+    walletLeft:  { flexDirection: 'row', alignItems: 'center' },
+    walletLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 11, fontWeight: '700' },
+    walletBalance: { color: '#fff', fontSize: 22, fontWeight: '900', marginTop: 2 },
+    walletRight: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    walletAdd:   { color: '#FFD700', fontWeight: '800', fontSize: 13 },
+
+    // Refer card
+    referCard:       { flexDirection: 'row', alignItems: 'center', padding: 18, borderRadius: 20, elevation: 3 },
+    referIconCircle: { width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
+    referTitle:      { color: '#fff', fontSize: 15, fontWeight: '900' },
+    referSub:        { color: 'rgba(255,255,255,0.7)', fontSize: 11, marginTop: 2 },
+    codeBadge:       { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10 },
+    codeBadgeText:   { color: '#fff', fontSize: 10, fontWeight: '900' },
+
+    // Settings
+    optionRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderRadius: 18, marginBottom: 10, elevation: 1 },
+    optionLeft:  { flexDirection: 'row', alignItems: 'center', gap: 12 },
+    optionIconBox:{ width: 36, height: 36, borderRadius: 11, justifyContent: 'center', alignItems: 'center' },
+    optionText:  { fontSize: 14, fontWeight: '700' },
+    langBtn:     { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10 },
+    langBtnText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+    versionText: { fontSize: 13, fontWeight: '700' },
+    logoutBtn:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 8, padding: 17, borderRadius: 18, gap: 10 },
+    logoutText:  { fontWeight: '900', fontSize: 15 },
+  });
+}

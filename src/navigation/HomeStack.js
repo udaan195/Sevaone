@@ -21,6 +21,7 @@ import ServiceDetails from '../screens/Main/ServiceDetails';
 import ServiceWizard from '../screens/Main/ServiceWizard';
 import ServiceReview from '../screens/Main/ServiceReview';
 import NotificationManager from '../screens/Main/NotificationManager';
+import PrivateJobs from '../screens/Main/PrivateJobs';
 
 const Stack = createStackNavigator();
 
@@ -139,6 +140,13 @@ export default function HomeStack() {
     headerTitleStyle: { fontWeight: '900' },
   }} 
 />
+
+      {/* PrivateJobs */}
+      <Stack.Screen
+        name="PrivateJobs"
+        component={PrivateJobs}
+        options={{ title: 'Private Jobs' }}
+      />
 
     </Stack.Navigator>
   );

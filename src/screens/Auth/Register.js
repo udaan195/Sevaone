@@ -11,6 +11,8 @@ import {
 export default function RegisterScreen({ navigation }) {
   const { colors } = useTheme();
   const [loading, setLoading] = useState(false);
+  const [registerLocked, setRegisterLocked] = useState(false);
+  const [registerAttempts, setRegisterAttempts] = useState(0);
   const [showPass, setShowPass] = useState(false);
   const [f, setF] = useState({ name: '', mob: '', email: '', state: '', city: '', pin: '', pass: '', cPass: '', ref: '' });
 
@@ -18,45 +20,93 @@ export default function RegisterScreen({ navigation }) {
   const processReferralReward = async (inputCode, newUserId) => {
     if (!inputCode) return;
     try {
-      // 1. Referrer ko dhoondo jiska code use hua hai
+      // ✅ Fetch amounts from admin-controlled Firestore config
+      const configSnap = await getDocs(
+        query(collection(db, 'app_config'))
+      );
+      const referralDoc = await import('firebase/firestore').then(({ getDoc }) =>
+        getDoc(doc(db, 'app_config', 'referral'))
+      );
+      const referrerBonus = referralDoc.exists() ? (referralDoc.data().referrerBonus || 5)  : 5;
+      const joineeBonus   = referralDoc.exists() ? (referralDoc.data().joineeBonus   || 20) : 20;
+      const isActive      = referralDoc.exists() ? (referralDoc.data().isActive !== false)  : true;
+
+      if (!isActive) return; // Program paused
+
+      // 1. Referrer ko dhoondo
       const q = query(collection(db, "users"), where("myReferralCode", "==", inputCode.toUpperCase()));
       const snap = await getDocs(q);
 
       if (!snap.empty) {
-        const referrerId = snap.docs[0].id;
+        const referrerId   = snap.docs[0].id;
+        const referrerData = snap.docs[0].data();
 
-        // 2. Referrer ko ₹5 bhejo
+        // 2. Referrer ko bonus
         await updateDoc(doc(db, "users", referrerId), {
-          walletBalance: increment(5)
+          walletBalance:       increment(referrerBonus),
+          totalReferralEarned: increment(referrerBonus),
         });
         await addDoc(collection(db, "transactions"), {
-          userId: referrerId, amount: 5, type: 'credit',
-          remark: `Referral Bonus: Friend Joined`, timestamp: serverTimestamp()
+          userId: referrerId, amount: referrerBonus, type: 'credit',
+          remark: 'Referral Bonus: Friend Joined', timestamp: serverTimestamp()
         });
 
-        // 3. Naye User ko ₹20 Joining Bonus bhejo
+        // 3. Naye user ko joining bonus
         await updateDoc(doc(db, "users", newUserId), {
-          walletBalance: increment(20)
+          walletBalance: increment(joineeBonus),
         });
         await addDoc(collection(db, "transactions"), {
-          userId: newUserId, amount: 20, type: 'credit',
-          remark: `Joining Bonus: Referral Used`, timestamp: serverTimestamp()
+          userId: newUserId, amount: joineeBonus, type: 'credit',
+          remark: 'Joining Bonus: Referral Used', timestamp: serverTimestamp()
         });
-        
-        console.log("Referral Rewards Credited Successfully!");
+
+        // ✅ Tier bonus check
+        const tierThreshold = referralDoc.exists() ? (referralDoc.data().tierThreshold || 5) : 5;
+        const tierBonus     = referralDoc.exists() ? (referralDoc.data().tierBonus     || 25) : 25;
+        const totalReferrals = (referrerData.totalReferralEarned || 0) / referrerBonus + 1;
+        if (totalReferrals % tierThreshold === 0) {
+          await updateDoc(doc(db, "users", referrerId), {
+            walletBalance:       increment(tierBonus),
+            totalReferralEarned: increment(tierBonus),
+          });
+          await addDoc(collection(db, "transactions"), {
+            userId: referrerId, amount: tierBonus, type: 'credit',
+            remark: `Tier Bonus: ${totalReferrals} Referrals Complete!`, timestamp: serverTimestamp()
+          });
+        }
       }
-    } catch (e) { console.log("Referral Reward Error:", e); }
+    } catch { } // Silent fail — registration continue hoti hai
   };
 
   const handleRegister = async () => {
+    // ✅ Rate limit check
+    if (registerLocked) {
+      Alert.alert('Please Wait', 'Thodi der baad try karo.');
+      return;
+    }
     if (!f.name || f.mob.length < 10 || !f.email || f.pass.length < 6) {
-      Alert.alert("Input Error", "All Field required.");
+      Alert.alert('Input Error', 'Saari fields sahi se bharo — naam, mobile (10 digits), email, password (min 6).');
       return;
     }
     if (f.pass !== f.cPass) {
-      Alert.alert("Error", " Password or Confirm Password does not match .");
+      Alert.alert('Error', 'Password aur Confirm Password match nahi kar rahe.');
       return;
     }
+
+    // ✅ Duplicate check — same email ya phone already registered?
+    try {
+      const emailQ = query(collection(db, 'users'), where('email', '==', f.email.trim()));
+      const phoneQ = query(collection(db, 'users'), where('phone', '==', f.mob.trim()));
+      const [emailSnap, phoneSnap] = await Promise.all([getDocs(emailQ), getDocs(phoneQ)]);
+      if (!emailSnap.empty) {
+        Alert.alert('Already Registered', 'Yeh email pehle se registered hai. Login karo.');
+        return;
+      }
+      if (!phoneSnap.empty) {
+        Alert.alert('Already Registered', 'Yeh mobile number pehle se registered hai. Login karo.');
+        return;
+      }
+    } catch {}
 
     setLoading(true);
     try {
@@ -90,7 +140,19 @@ export default function RegisterScreen({ navigation }) {
       Alert.alert("Successfull!", "Registration Successful .");
       navigation.navigate('Login');
     } catch (e) {
-      Alert.alert("Registration Failed", e.message);
+      const newAttempts = registerAttempts + 1;
+      setRegisterAttempts(newAttempts);
+      if (newAttempts >= 3) {
+        // 3 fails — 30 second lock
+        setRegisterLocked(true);
+        setTimeout(() => {
+          setRegisterLocked(false);
+          setRegisterAttempts(0);
+        }, 30000);
+        Alert.alert('Too Many Attempts', 'Registration 30 seconds ke liye lock ho gayi. Baad mein try karo.');
+      } else {
+        Alert.alert('Registration Failed', e.message || 'Koi error aayi. Dobara try karo.');
+      }
     } finally {
       setLoading(false);
     }
@@ -133,8 +195,11 @@ export default function RegisterScreen({ navigation }) {
         {renderInput("Confirm Password *", "cPass", "lock-check", "default", true)}
         {renderInput("Referral Code (Optional)", "ref", "gift")}
 
-        <Button mode="contained" onPress={handleRegister} loading={loading} style={styles.regBtn} labelStyle={styles.btnLabel}>
-          REGISTER NOW
+        <Button mode="contained" onPress={handleRegister} loading={loading}
+          disabled={loading || registerLocked}
+          style={[styles.regBtn, registerLocked && { opacity: 0.5 }]}
+          labelStyle={styles.btnLabel}>
+          {registerLocked ? 'WAIT 30s...' : 'REGISTER NOW'}
         </Button>
 
         <TouchableOpacity onPress={() => navigation.goBack()} style={{marginTop: 20}}>

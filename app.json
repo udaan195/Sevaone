@@ -5,12 +5,12 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#003366"
     },
     "ios": {
       "supportsTablet": true,
@@ -22,14 +22,15 @@
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#003366"
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
-        "NOTIFICATIONS",
-        "CAMERA",
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE"
+        "android.permission.NOTIFICATIONS",
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
@@ -44,7 +45,20 @@
     "extra": {
       "eas": {
         "projectId": "3429dc9b-58d9-4160-977f-ee6009930a66"
-      }
-    }
+      },
+      "firebaseApiKey": "AIzaSyDLvZ0TBDeGO0GROYxwatjNq0Xljsc_gjU",
+      "firebaseAuthDomain": "sewaone-1122.firebaseapp.com",
+      "firebaseProjectId": "sewaone-1122",
+      "firebaseStorageBucket": "sewaone-1122.firebasestorage.app",
+      "firebaseMessagingSenderId": "719367561240",
+      "firebaseAppId": "1:719367561240:web:dea07bed2be0ccdc71a36d",
+      "cloudinaryCloudName": "dxuurwexl",
+      "cloudinaryUploadPreset": "edusphere_uploads",
+      "telegramBotToken": "7178445265:AAFRMgEnC_t10ivkjhlEu9VCvT7JoJy-oB0",
+        "walletUpiId": "7518640453-2@axl",
+        "walletUpiName": "SewaOne",
+      "telegramChatId": "7882393836"
+    },
+    "owner": "udaan195"
   }
 }

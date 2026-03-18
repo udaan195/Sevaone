@@ -1,331 +1,756 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert, Modal, Image, FlatList } from 'react-native';
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  View, Text, StyleSheet, TouchableOpacity, TextInput,
+  Alert, Modal, Image, FlatList, Platform, ScrollView,
+  SafeAreaView, StatusBar,
+} from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Surface, Button, ActivityIndicator } from 'react-native-paper';
+import { Surface, ActivityIndicator } from 'react-native-paper';
 import * as ImagePicker from 'expo-image-picker';
+import * as Crypto from 'expo-crypto';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import QRCode from 'react-native-qrcode-svg';
+import Constants from 'expo-constants';
 import { auth, db } from '../../api/firebaseConfig';
-import { doc, onSnapshot, collection, addDoc, query, where, serverTimestamp, setDoc, getDoc, updateDoc } from 'firebase/firestore';
+import {
+  doc, onSnapshot, collection, addDoc, query,
+  where, serverTimestamp, setDoc, getDoc, updateDoc, orderBy,
+} from 'firebase/firestore';
+import { useAppTheme } from '../../context/ThemeContext';
+
+// ── Config ────────────────────────────────────────────────
+const CLOUD_NAME    = Constants?.expoConfig?.extra?.cloudinaryCloudName    || 'dxuurwexl';
+const UPLOAD_PRESET = Constants?.expoConfig?.extra?.cloudinaryUploadPreset || 'edusphere_uploads';
+const UPI_ID        = Constants?.expoConfig?.extra?.walletUpiId            || '7518640453-2@axl';
+const UPI_NAME      = Constants?.expoConfig?.extra?.walletUpiName          || 'SewaOne';
+
+async function hashPin(pin) {
+  return await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    String(pin).trim()
+  );
+}
+
+const FILTERS = ['All', 'Credit', 'Debit'];
 
 export default function WalletScreen() {
-  const [loading, setLoading] = useState(true);
-  const [isActivated, setIsActivated] = useState(false);
-  const [balance, setBalance] = useState(0);
+  const { theme, t } = useAppTheme();
+
+  const [loading, setLoading]           = useState(true);
+  const [isActivated, setIsActivated]   = useState(false);
+  const [balance, setBalance]           = useState(0);
   const [pendingAmount, setPendingAmount] = useState(0);
-  const [showBalance, setShowBalance] = useState(false);
+  const [showBalance, setShowBalance]   = useState(false);
   const [transactions, setTransactions] = useState([]);
+  const [activeFilter, setActiveFilter] = useState('All');
 
-  // Modals Visibility States
-  const [showPinModal, setShowPinModal] = useState(false);
-  const [addMoneyModal, setAddMoneyModal] = useState(false);
+  // Modals
+  const [pinModal, setPinModal]           = useState(false);
+  const [addModal, setAddModal]           = useState(false);
   const [changePinModal, setChangePinModal] = useState(false);
-  
-  // Input States
-  const [pin, setPin] = useState('');
-  const [confirmPin, setConfirmPin] = useState('');
-  const [inputPin, setInputPin] = useState('');
-  const [amount, setAmount] = useState('');
-  const [utr, setUtr] = useState('');
-  const [proofImage, setProofImage] = useState(null);
+  const [withdrawModal, setWithdrawModal] = useState(false);
+  const [statModal, setStatModal]         = useState(false);
 
-  // Change PIN States
-  const [oldPin, setOldPin] = useState('');
-  const [newPin, setNewPin] = useState('');
+  // Add money
+  const [pin, setPin]               = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [inputPin, setInputPin]     = useState('');
+  const [amount, setAmount]         = useState('');
+  const [utr, setUtr]               = useState('');
+  const [proofImage, setProofImage] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+
+  // Change PIN
+  const [oldPin, setOldPin]           = useState('');
+  const [newPin, setNewPin]           = useState('');
   const [confirmNewPin, setConfirmNewPin] = useState('');
+
+  // Withdraw
+  const [withdrawAmt, setWithdrawAmt]   = useState('');
+  const [withdrawUPI, setWithdrawUPI]   = useState('');
+  const [withdrawNote, setWithdrawNote] = useState('');
+
+  // PDF generating
+  const [generatingPDF, setGeneratingPDF] = useState(false);
 
   const uid = auth.currentUser?.uid;
 
-  // ✨ Cloudinary Configuration
-  const CLOUDINARY_URL = "https://api.cloudinary.com/v1_1/dxuurwexl/image/upload";
-  const UPLOAD_PRESET = "edusphere_uploads";
-
+  // ── Firestore listeners ──────────────────────────────────
   useEffect(() => {
     if (!uid) return;
 
-    const unsubUser = onSnapshot(doc(db, "users", uid), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setBalance(data.walletBalance || 0);
-        if (data.walletPin) setIsActivated(true);
+    const unsubUser = onSnapshot(doc(db, 'users', uid), snap => {
+      if (snap.exists()) {
+        const d = snap.data();
+        setBalance(d.walletBalance || 0);
+        if (d.walletPinHash) setIsActivated(true);
       }
       setLoading(false);
     });
 
-    const qPending = query(collection(db, "wallet_requests"), where("userId", "==", uid), where("status", "==", "pending"));
-    const unsubPending = onSnapshot(qPending, (snap) => {
-      let totalP = 0;
-      snap.forEach(d => totalP += d.data().amount);
-      setPendingAmount(totalP);
-    });
+    const unsubPending = onSnapshot(
+      query(collection(db, 'wallet_requests'), where('userId', '==', uid), where('status', '==', 'pending')),
+      snap => {
+        let total = 0;
+        snap.forEach(d => total += d.data().amount);
+        setPendingAmount(total);
+      }
+    );
 
-    const qTx = query(collection(db, "transactions"), where("userId", "==", uid));
-    const unsubTx = onSnapshot(qTx, (snap) => {
-      const txData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      txData.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
-      setTransactions(txData);
-    });
+    // ✅ orderBy in Firestore — no client-side sort
+    const unsubTx = onSnapshot(
+      query(collection(db, 'transactions'), where('userId', '==', uid), orderBy('timestamp', 'desc')),
+      snap => setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    );
 
     return () => { unsubUser(); unsubPending(); unsubTx(); };
   }, [uid]);
 
-  const formatTime = (ts) => {
-    if (!ts) return "Processing...";
-    try {
-      const date = ts.toDate ? ts.toDate() : new Date(ts);
-      return date.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-    } catch (e) { return "Recent"; }
-  };
+  // ── Filter logic ─────────────────────────────────────────
+  const filteredTx = useMemo(() => {
+    if (activeFilter === 'All')    return transactions;
+    if (activeFilter === 'Credit') return transactions.filter(tx => tx.type === 'credit');
+    return transactions.filter(tx => tx.type === 'debit');
+  }, [transactions, activeFilter]);
 
-  // --- 📸 Cloudinary Upload Helper ---
-  const uploadToCloudinary = async (uri) => {
-    const data = new FormData();
-    data.append('file', {
-      uri: uri,
-      type: 'image/jpeg',
-      name: 'wallet_recharge.jpg',
+  // ── Monthly summary ──────────────────────────────────────
+  const monthlySummary = useMemo(() => {
+    const now = new Date();
+    const thisMonth = transactions.filter(tx => {
+      try {
+        const d = tx.timestamp?.toDate ? tx.timestamp.toDate() : new Date(tx.timestamp);
+        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      } catch { return false; }
     });
-    data.append('upload_preset', UPLOAD_PRESET);
+    const credited = thisMonth.filter(tx => tx.type === 'credit').reduce((s, tx) => s + (tx.amount || 0), 0);
+    const debited  = thisMonth.filter(tx => tx.type === 'debit' ).reduce((s, tx) => s + (tx.amount || 0), 0);
+    return { credited, debited, count: thisMonth.length };
+  }, [transactions]);
 
+  const formatTime = ts => {
+    if (!ts) return 'Processing...';
     try {
-      let res = await fetch(CLOUDINARY_URL, {
-        method: 'POST',
-        body: data,
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      let json = await res.json();
-      return json.secure_url;
-    } catch (e) {
-      console.error("Cloudinary Error:", e);
-      return null;
-    }
+      const d = ts?.toDate ? ts.toDate() : new Date(ts);
+      return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    } catch { return 'Recent'; }
   };
 
+  // ── Cloudinary upload ────────────────────────────────────
+  const uploadToCloudinary = async uri => {
+    setIsUploading(true);
+    const data = new FormData();
+    data.append('file',           { uri, type: 'image/jpeg', name: 'wallet_proof.jpg' });
+    data.append('upload_preset',  UPLOAD_PRESET);
+    try {
+      const res  = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`,
+        { method: 'POST', body: data });
+      const json = await res.json();
+      return json.secure_url;
+    } catch { return null; }
+    finally { setIsUploading(false); }
+  };
+
+  // ── Activate wallet ──────────────────────────────────────
   const handleActivate = async () => {
-    if (pin.length !== 4 || pin !== confirmPin) return Alert.alert("Error", "PIN match nahi ho raha.");
+    if (pin.length !== 4 || pin !== confirmPin)
+      return Alert.alert('Error', 'PIN match nahi ho raha ya 4 digits nahi hain.');
     setLoading(true);
     try {
-      await updateDoc(doc(db, "users", uid), { walletPin: String(pin).trim() });
-      Alert.alert("Success", "Security PIN Set! Aapka Joining Bonus wallet mein dikh jayega.");
-    } catch (e) { 
-      await setDoc(doc(db, "users", uid), { walletPin: String(pin).trim() }, { merge: true });
-      Alert.alert("Success", "Security PIN Set!");
-    }
+      const hashed = await hashPin(pin);
+      await setDoc(doc(db, 'users', uid), { walletPinHash: hashed }, { merge: true });
+      Alert.alert('✅ Wallet Active!', 'Security PIN set ho gaya!');
+    } catch { Alert.alert('Error', 'PIN setup fail. Try again.'); }
     finally { setLoading(false); }
   };
 
+  // ── Verify PIN ───────────────────────────────────────────
   const verifyPinForBalance = async () => {
-    const userSnap = await getDoc(doc(db, "users", uid));
-    if (String(userSnap.data().walletPin).trim() === String(inputPin).trim()) {
-      setShowBalance(true);
-      setShowPinModal(false);
-      setInputPin('');
-    } else { Alert.alert("Error", "Galat Transaction PIN!"); }
+    try {
+      const snap = await getDoc(doc(db, 'users', uid));
+      const inputHash = await hashPin(inputPin);
+      if (snap.data()?.walletPinHash === inputHash) {
+        setShowBalance(true);
+        setPinModal(false);
+        setInputPin('');
+      } else {
+        Alert.alert('Galat PIN', 'Dobara try karein.');
+      }
+    } catch { Alert.alert('Error', 'Verification failed.'); }
   };
 
-  // --- ✨ UPDATED: Submit with Cloudinary ---
+  // ── Add money ────────────────────────────────────────────
   const submitAddMoney = async () => {
-    if (!amount || !utr || !proofImage) return Alert.alert("Required", "Please fill all details.");
+    if (!amount || !utr || !proofImage)
+      return Alert.alert('Required', 'Amount, UTR aur Screenshot zaroori hain.');
+    if (parseInt(amount) < 10)
+      return Alert.alert('Error', 'Minimum ₹10 add kar sakte hain.');
     setLoading(true);
     try {
-      // 1. First upload image to Cloudinary
       const cloudUrl = await uploadToCloudinary(proofImage);
-      
-      if (!cloudUrl) {
-        throw new Error("Screenshot upload failed. Please try again.");
+      if (!cloudUrl) throw new Error('Screenshot upload fail. Internet check karo.');
+
+      await addDoc(collection(db, 'wallet_requests'), {
+        userId: uid, amount: parseInt(amount),
+        utr: utr.trim(), screenshot: cloudUrl,
+        status: 'pending', timestamp: serverTimestamp(),
+      });
+
+      // Telegram notification
+      const BOT   = Constants?.expoConfig?.extra?.telegramBotToken;
+      const CHAT  = Constants?.expoConfig?.extra?.telegramChatId;
+      if (BOT && CHAT) {
+        const msg =
+          `💰 *WALLET RECHARGE REQUEST*\n\n` +
+          `👤 User: \`${uid?.substring(0,12)}...\`\n` +
+          `💵 Amount: ₹${parseInt(amount)}\n` +
+          `🔖 UTR: ${utr.trim()}\n` +
+          `📸 Proof: [View](${cloudUrl})\n\n` +
+          `👉 [Admin Panel](https://sewaone-admin.netlify.app/wallet-requests)`;
+        fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: CHAT, text: msg, parse_mode: 'Markdown' }),
+        }).catch(() => {});
       }
 
-      // 2. Save Request to Firestore with Cloud URL
-      await addDoc(collection(db, "wallet_requests"), {
-        userId: uid,
-        amount: parseInt(amount),
-        utr: utr.trim(),
-        screenshot: cloudUrl, // Using the new Cloudinary link
-        status: 'pending',
-        timestamp: serverTimestamp()
-      });
-
-      setAddMoneyModal(false);
+      setAddModal(false);
       setAmount(''); setUtr(''); setProofImage(null);
-      Alert.alert("Success", "Deposit proof submitted to Admin!");
-    } catch (e) { 
-      Alert.alert("Error", e.message || "Submission Failed"); 
-    }
+      Alert.alert('✅ Submitted!', '24 ghante mein approve hogi.');
+    } catch (e) { Alert.alert('Error', e.message || 'Submission failed.'); }
     finally { setLoading(false); }
   };
 
+  // ── Change PIN ───────────────────────────────────────────
   const handleChangePin = async () => {
-    if (newPin.length !== 4 || newPin !== confirmNewPin) return Alert.alert("Error", "New PIN mismatch.");
+    if (newPin.length !== 4 || newPin !== confirmNewPin)
+      return Alert.alert('Error', 'Naya PIN mismatch ya 4 digits nahi.');
     setLoading(true);
     try {
-      const userSnap = await getDoc(doc(db, "users", uid));
-      if (String(oldPin).trim() === String(userSnap.data().walletPin).trim()) {
-        await updateDoc(doc(db, "users", uid), { walletPin: String(newPin).trim() });
-        Alert.alert("Success", "PIN updated!");
-        setChangePinModal(false);
-        setOldPin(''); setNewPin(''); setConfirmNewPin('');
-      } else { Alert.alert("Error", "Old PIN incorrect."); }
-    } catch (e) { Alert.alert("Error", "Update Failed"); }
+      const snap = await getDoc(doc(db, 'users', uid));
+      if (snap.data()?.walletPinHash !== await hashPin(oldPin)) {
+        Alert.alert('Error', 'Purana PIN galat hai.');
+        return;
+      }
+      await updateDoc(doc(db, 'users', uid), { walletPinHash: await hashPin(newPin) });
+      Alert.alert('✅', 'PIN update ho gaya!');
+      setChangePinModal(false);
+      setOldPin(''); setNewPin(''); setConfirmNewPin('');
+    } catch { Alert.alert('Error', 'PIN update failed.'); }
     finally { setLoading(false); }
   };
 
-  if (loading) return <ActivityIndicator style={{ flex: 1 }} color="#003366" />;
+  // ── Withdraw request ─────────────────────────────────────
+  const submitWithdraw = async () => {
+    if (!withdrawAmt || parseInt(withdrawAmt) < 10)
+      return Alert.alert('Error', 'Minimum ₹10 withdraw kar sakte hain.');
+    if (parseInt(withdrawAmt) > balance)
+      return Alert.alert('Insufficient Balance', 'Balance kam hai.');
+    if (!withdrawUPI.includes('@'))
+      return Alert.alert('Error', 'Valid UPI ID daalo (e.g. name@bank).');
+    setLoading(true);
+    try {
+      await addDoc(collection(db, 'wallet_requests'), {
+        userId: uid, type: 'withdraw',
+        amount: parseInt(withdrawAmt),
+        upiId: withdrawUPI.trim(),
+        note: withdrawNote.trim(),
+        status: 'pending',
+        timestamp: serverTimestamp(),
+      });
+      setWithdrawModal(false);
+      setWithdrawAmt(''); setWithdrawUPI(''); setWithdrawNote('');
+      Alert.alert('✅ Withdraw Request', 'Admin review karega aur 24-48 ghante mein process hoga.');
+    } catch { Alert.alert('Error', 'Request fail. Try again.'); }
+    finally { setLoading(false); }
+  };
 
+  // ── PDF Statement ────────────────────────────────────────
+  const downloadStatement = async () => {
+    setGeneratingPDF(true);
+    try {
+      const now = new Date();
+      const rows = transactions.map(tx => {
+        const d = tx.timestamp?.toDate ? tx.timestamp.toDate() : new Date();
+        return `<tr style="border-bottom:1px solid #eee">
+          <td style="padding:8px">${d.toLocaleDateString('en-IN')}</td>
+          <td style="padding:8px">${tx.remark || 'Wallet Operation'}</td>
+          <td style="padding:8px;color:${tx.type==='credit'?'#10B981':'#EF4444'};font-weight:bold">
+            ${tx.type==='credit'?'+':'-'}₹${tx.amount}
+          </td>
+          <td style="padding:8px">${tx.type?.toUpperCase()}</td>
+        </tr>`;
+      }).join('');
+
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+        <title>SewaOne Wallet Statement</title>
+        <style>body{font-family:Arial,sans-serif;padding:24px;color:#1e293b}
+        h1{color:#002855;border-bottom:2px solid #002855;padding-bottom:10px}
+        table{width:100%;border-collapse:collapse}th{background:#002855;color:#fff;padding:10px;text-align:left}
+        .summary{display:flex;gap:20px;margin:20px 0}
+        .stat{background:#f8fafc;border-radius:10px;padding:14px;flex:1;border-left:4px solid}
+        </style></head><body>
+        <h1>🏦 SewaOne Wallet Statement</h1>
+        <p>Generated: ${now.toLocaleString('en-IN')} | User: ${uid?.substring(0,12)}...</p>
+        <div class="summary">
+          <div class="stat" style="border-color:#002855"><div style="font-size:11px;color:#64748b">BALANCE</div><div style="font-size:22px;font-weight:900;color:#002855">₹${balance}</div></div>
+          <div class="stat" style="border-color:#10B981"><div style="font-size:11px;color:#64748b">THIS MONTH CREDIT</div><div style="font-size:22px;font-weight:900;color:#10B981">₹${monthlySummary.credited}</div></div>
+          <div class="stat" style="border-color:#EF4444"><div style="font-size:11px;color:#64748b">THIS MONTH DEBIT</div><div style="font-size:22px;font-weight:900;color:#EF4444">₹${monthlySummary.debited}</div></div>
+        </div>
+        <table><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Type</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+        <p style="margin-top:30px;color:#94a3b8;font-size:11px">SewaOne — This is a computer-generated statement.</p>
+        </body></html>`;
+
+      const path = FileSystem.documentDirectory + `SewaOne_Statement_${Date.now()}.html`;
+      await FileSystem.writeAsStringAsync(path, html);
+      await Sharing.shareAsync(path, { mimeType: 'text/html', dialogTitle: 'Wallet Statement' });
+    } catch { Alert.alert('Error', 'Statement generate nahi ho saka.'); }
+    finally { setGeneratingPDF(false); }
+  };
+
+  const s = makeStyles(theme);
+  if (loading) return <ActivityIndicator style={{ flex: 1 }} color={theme.primary} />;
+
+  // ── Setup Screen ─────────────────────────────────────────
   if (!isActivated) {
     return (
-      <View style={styles.setupContainer}>
-        <MaterialCommunityIcons name="shield-lock" size={80} color="#003366" />
-        <Text style={styles.setupTitle}>Security Setup</Text>
-        <TextInput style={styles.pinInput} placeholder="Set 4-Digit PIN" secureTextEntry keyboardType="numeric" maxLength={4} onChangeText={setPin} />
-        <TextInput style={styles.pinInput} placeholder="Confirm PIN" secureTextEntry keyboardType="numeric" maxLength={4} onChangeText={setConfirmPin} />
-        <Button mode="contained" onPress={handleActivate} style={styles.btn}>ACTIVATE WALLET</Button>
-      </View>
+      <SafeAreaView style={[s.safe, { backgroundColor: theme.bg }]}>
+        <View style={[s.setupWrap, { backgroundColor: theme.bg }]}>
+          <View style={[s.setupIcon, { backgroundColor: theme.primary + '20' }]}>
+            <MaterialCommunityIcons name="shield-lock" size={56} color={theme.primary} />
+          </View>
+          <Text style={[s.setupTitle, { color: theme.primary }]}>Wallet Activate Karein</Text>
+          <Text style={[s.setupSub, { color: theme.textMuted }]}>
+            4-digit security PIN set karein — transactions ke liye zaroori hai
+          </Text>
+          <TextInput style={[s.pinInput, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border }]}
+            placeholder="Set 4-Digit PIN" placeholderTextColor={theme.textMuted}
+            secureTextEntry keyboardType="numeric" maxLength={4} onChangeText={setPin} />
+          <TextInput style={[s.pinInput, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border }]}
+            placeholder="Confirm PIN" placeholderTextColor={theme.textMuted}
+            secureTextEntry keyboardType="numeric" maxLength={4} onChangeText={setConfirmPin} />
+          <TouchableOpacity style={[s.activateBtn, { backgroundColor: theme.primary }]} onPress={handleActivate}>
+            <MaterialCommunityIcons name="shield-check" size={18} color="#fff" />
+            <Text style={s.activateBtnText}>Activate Wallet</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
     );
   }
 
+  // ── Main Screen ──────────────────────────────────────────
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={[s.safe, { backgroundColor: theme.bg }]}>
+      <StatusBar barStyle="light-content" />
       <FlatList
-        data={transactions}
-        keyExtractor={(item) => item.id}
+        data={filteredTx}
+        keyExtractor={item => item.id}
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 40 }}
         ListHeaderComponent={
           <>
-            <Surface style={styles.balanceCard}>
-              <Text style={styles.label}>Available Balance</Text>
-              <View style={styles.balanceRow}>
-                <Text style={styles.amountText}>{showBalance ? `₹${balance}` : '₹ ••••'}</Text>
-                <TouchableOpacity onPress={() => showBalance ? setShowBalance(false) : setShowPinModal(true)}>
-                  <MaterialCommunityIcons name={showBalance ? "eye-off" : "eye"} size={28} color="#fff" />
+            {/* Balance Card */}
+            <View style={[s.balanceCard, { backgroundColor: '#002855' }]}>
+              <Text style={s.balLabel}>WALLET BALANCE</Text>
+              <View style={s.balRow}>
+                <Text style={s.balAmt}>
+                  {showBalance ? `₹${balance.toLocaleString('en-IN')}` : '₹ ••••••'}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => showBalance ? setShowBalance(false) : setPinModal(true)}
+                  style={s.eyeBtn}
+                >
+                  <MaterialCommunityIcons name={showBalance ? 'eye-off' : 'eye'} size={26} color="#fff" />
                 </TouchableOpacity>
               </View>
-            </Surface>
+              <View style={s.upiRow}>
+                <MaterialCommunityIcons name="bank" size={12} color="rgba(255,255,255,0.5)" />
+                <Text style={s.upiText}>{UPI_ID}</Text>
+              </View>
+            </View>
 
+            {/* Pending Alert */}
             {pendingAmount > 0 && (
-              <Surface style={styles.pendingAlert}>
-                <MaterialCommunityIcons name="update" size={24} color="#B45309" />
-                <View style={{flex: 1, marginLeft: 12}}>
-                  <Text style={styles.pendingTitle}>Pending: ₹{pendingAmount}</Text>
-                  <Text style={styles.pendingSub}>Payment verification under process.</Text>
+              <View style={s.pendingBanner}>
+                <MaterialCommunityIcons name="clock-outline" size={20} color="#92400E" />
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={s.pendingTitle}>₹{pendingAmount} Pending</Text>
+                  <Text style={s.pendingSub}>Verification under process</Text>
                 </View>
-              </Surface>
+              </View>
             )}
 
-            <View style={styles.actionRow}>
-              <TouchableOpacity style={styles.actionBtn} onPress={() => setAddMoneyModal(true)}>
-                <Surface style={styles.iconCircle}><MaterialCommunityIcons name="plus" size={28} color="#003366" /></Surface>
-                <Text style={styles.actionLabel}>Add Money</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.actionBtn} onPress={() => setChangePinModal(true)}>
-                <Surface style={styles.iconCircle}><MaterialCommunityIcons name="lock-reset" size={28} color="#003366" /></Surface>
-                <Text style={styles.actionLabel}>Change PIN</Text>
-              </TouchableOpacity>
+            {/* Monthly Summary */}
+            <TouchableOpacity
+              style={[s.summaryCard, { backgroundColor: theme.card }]}
+              onPress={() => setStatModal(true)}
+              activeOpacity={0.85}
+            >
+              <View style={s.summaryLeft}>
+                <MaterialCommunityIcons name="chart-bar" size={18} color="#3B82F6" />
+                <Text style={[s.summaryTitle, { color: theme.text }]}>This Month</Text>
+              </View>
+              <View style={s.summaryStats}>
+                <View style={s.summaryStat}>
+                  <Text style={s.statUp}>+₹{monthlySummary.credited}</Text>
+                  <Text style={[s.statLbl, { color: theme.textMuted }]}>Credit</Text>
+                </View>
+                <View style={[s.statDivider, { backgroundColor: theme.border }]} />
+                <View style={s.summaryStat}>
+                  <Text style={s.statDown}>-₹{monthlySummary.debited}</Text>
+                  <Text style={[s.statLbl, { color: theme.textMuted }]}>Spent</Text>
+                </View>
+                <View style={[s.statDivider, { backgroundColor: theme.border }]} />
+                <View style={s.summaryStat}>
+                  <Text style={[s.statCount, { color: theme.text }]}>{monthlySummary.count}</Text>
+                  <Text style={[s.statLbl, { color: theme.textMuted }]}>Txns</Text>
+                </View>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={18} color={theme.border} />
+            </TouchableOpacity>
+
+            {/* Action Buttons */}
+            <View style={s.actionGrid}>
+              {[
+                { icon:'plus-circle',   label:'Add Money',   color:'#3B82F6', onPress:() => setAddModal(true) },
+                { icon:'arrow-up-circle', label:'Withdraw',  color:'#EF4444', onPress:() => setWithdrawModal(true) },
+                { icon:'lock-reset',    label:'Change PIN',  color:'#8B5CF6', onPress:() => setChangePinModal(true) },
+                { icon:'file-download', label:'Statement',   color:'#10B981', onPress:downloadStatement, loading:generatingPDF },
+              ].map((a, i) => (
+                <TouchableOpacity key={i} style={[s.actionBtn, { backgroundColor: theme.card }]} onPress={a.onPress} activeOpacity={0.8}>
+                  {a.loading
+                    ? <ActivityIndicator size="small" color={a.color} />
+                    : <MaterialCommunityIcons name={a.icon} size={26} color={a.color} />
+                  }
+                  <Text style={[s.actionLabel, { color: theme.textMuted }]}>{a.label}</Text>
+                </TouchableOpacity>
+              ))}
             </View>
-            <Text style={styles.sectionTitle}>Recent History</Text>
+
+            {/* Filter Tabs */}
+            <View style={s.filterRow}>
+              {FILTERS.map(f => (
+                <TouchableOpacity
+                  key={f}
+                  style={[s.filterTab, activeFilter === f && s.filterTabActive]}
+                  onPress={() => setActiveFilter(f)}
+                >
+                  <Text style={[s.filterText, activeFilter === f && s.filterTextActive]}>{f}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
           </>
         }
-        renderItem={({ item }) => (
-          <Surface style={styles.txItem}>
-             <View style={[styles.txIcon, {backgroundColor: item.type === 'debit' ? '#FEE2E2' : '#DCFCE7'}]}>
-              <MaterialCommunityIcons name={item.type === 'debit' ? "minus" : "plus"} size={22} color={item.type === 'debit' ? '#EF4444' : '#10B981'} />
-            </View>
-            <View style={{ flex: 1, marginLeft: 15 }}>
-              <Text style={{ fontWeight: 'bold', color: '#1E293B' }}>{item.remark || "Wallet Operation"}</Text>
-              <Text style={{ fontSize: 10, color: '#94a3b8' }}>{formatTime(item.timestamp)}</Text>
-            </View>
-            <Text style={{ fontWeight: 'bold', color: item.type === 'debit' ? '#EF4444' : '#10B981' }}>
-              {item.type === 'debit' ? '-' : '+'} ₹{item.amount}
+        ListEmptyComponent={
+          <View style={s.emptyWrap}>
+            <MaterialCommunityIcons name="receipt-text-outline" size={48} color={theme.border} />
+            <Text style={[s.emptyText, { color: theme.textMuted }]}>
+              {activeFilter === 'All' ? 'Koi transaction nahi' : `Koi ${activeFilter} transaction nahi`}
             </Text>
-          </Surface>
+          </View>
+        }
+        renderItem={({ item }) => (
+          <View style={[s.txRow, { backgroundColor: theme.card }]}>
+            <View style={[s.txIcon, { backgroundColor: item.type === 'credit' ? '#DCFCE7' : '#FEE2E2' }]}>
+              <MaterialCommunityIcons
+                name={item.type === 'credit' ? 'arrow-down-circle' : 'arrow-up-circle'}
+                size={22}
+                color={item.type === 'credit' ? '#10B981' : '#EF4444'}
+              />
+            </View>
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={[s.txRemark, { color: theme.text }]} numberOfLines={1}>
+                {item.remark || 'Wallet Operation'}
+              </Text>
+              <Text style={[s.txTime, { color: theme.textMuted }]}>{formatTime(item.timestamp)}</Text>
+            </View>
+            <Text style={[s.txAmt, { color: item.type === 'credit' ? '#10B981' : '#EF4444' }]}>
+              {item.type === 'credit' ? '+' : '-'}₹{item.amount}
+            </Text>
+          </View>
         )}
       />
 
-      <Modal visible={addMoneyModal} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <Surface style={styles.centeredModal}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Deposit Funds</Text>
-              <TouchableOpacity onPress={() => setAddMoneyModal(false)}><MaterialCommunityIcons name="close" size={24} color="#666" /></TouchableOpacity>
-            </View>
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={styles.qrSection}>
-                <Surface style={styles.qrBorder}>
-                  <QRCode value={`upi://pay?pa=7518640453-2@axl&pn=SewaOne&am=${amount || 0}`} size={150} />
-                </Surface>
-                <Text style={styles.upiIdText}>7518640453-2@axl</Text>
-              </View>
-              <TextInput style={styles.input} placeholder="Amount (₹)" keyboardType="numeric" value={amount} onChangeText={setAmount} />
-              <TextInput style={styles.input} placeholder="12 Digit UTR" keyboardType="numeric" maxLength={12} onChangeText={setUtr} />
-              <TouchableOpacity style={styles.uploadBox} onPress={async () => {
-                let res = await ImagePicker.launchImageLibraryAsync({allowsEditing: true, quality: 0.5});
-                if(!res.canceled) setProofImage(res.assets[0].uri);
-              }}>
-                {proofImage ? <Image source={{ uri: proofImage }} style={styles.preview} /> : 
-                <><MaterialCommunityIcons name="image-plus" size={30} color="#003366" /><Text style={{fontSize:11}}>Screenshot Upload</Text></>}
+      {/* ── Add Money Modal ── */}
+      <Modal visible={addModal} transparent animationType="slide">
+        <View style={m.overlay}>
+          <View style={[m.sheet, { backgroundColor: theme.card }]}>
+            <View style={m.handle} />
+            <View style={m.headerRow}>
+              <Text style={[m.title, { color: theme.primary }]}>Add Money</Text>
+              <TouchableOpacity onPress={() => setAddModal(false)}>
+                <MaterialCommunityIcons name="close" size={22} color={theme.textMuted} />
               </TouchableOpacity>
-              <Button mode="contained" onPress={submitAddMoney} style={styles.submitBtn}>SUBMIT PROOF</Button>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <View style={m.qrWrap}>
+                <QRCode value={`upi://pay?pa=${UPI_ID}&pn=${UPI_NAME}&am=${amount || 0}&cu=INR`} size={160} />
+                <Text style={[m.upiId, { color: theme.primary }]}>{UPI_ID}</Text>
+                <Text style={[m.upiName, { color: theme.textMuted }]}>{UPI_NAME}</Text>
+              </View>
+              <TextInput style={[m.input, { backgroundColor: theme.surface, color: theme.text, borderColor: theme.border }]}
+                placeholder="Amount (₹)" placeholderTextColor={theme.textMuted}
+                keyboardType="numeric" value={amount} onChangeText={setAmount} />
+              <TextInput style={[m.input, { backgroundColor: theme.surface, color: theme.text, borderColor: theme.border }]}
+                placeholder="UTR / Reference Number (12 digits)" placeholderTextColor={theme.textMuted}
+                keyboardType="numeric" maxLength={12} onChangeText={setUtr} />
+              <TouchableOpacity
+                style={[m.uploadBox, { borderColor: theme.border, backgroundColor: theme.surface }]}
+                onPress={async () => {
+                  const res = await ImagePicker.launchImageLibraryAsync({ allowsEditing: true, quality: 0.5 });
+                  if (!res.canceled) setProofImage(res.assets[0].uri);
+                }}
+              >
+                {proofImage ? (
+                  <Image source={{ uri: proofImage }} style={m.preview} />
+                ) : (
+                  <>
+                    <MaterialCommunityIcons name="image-plus" size={28} color={theme.primary} />
+                    <Text style={{ fontSize: 12, color: theme.textMuted, marginTop: 6, fontWeight: '600' }}>
+                      Payment Screenshot Upload Karein
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[m.submitBtn, (isUploading || loading) && { opacity: 0.6 }]}
+                onPress={submitAddMoney}
+                disabled={isUploading || loading}
+              >
+                {(isUploading || loading)
+                  ? <ActivityIndicator color="#fff" />
+                  : <>
+                      <MaterialCommunityIcons name="check-circle" size={18} color="#fff" />
+                      <Text style={m.submitText}>SUBMIT PROOF</Text>
+                    </>
+                }
+              </TouchableOpacity>
             </ScrollView>
-          </Surface>
+          </View>
         </View>
       </Modal>
 
+      {/* ── Withdraw Modal ── */}
+      <Modal visible={withdrawModal} transparent animationType="slide">
+        <View style={m.overlay}>
+          <View style={[m.sheet, { backgroundColor: theme.card }]}>
+            <View style={m.handle} />
+            <View style={m.headerRow}>
+              <Text style={[m.title, { color: '#EF4444' }]}>Withdraw Request</Text>
+              <TouchableOpacity onPress={() => setWithdrawModal(false)}>
+                <MaterialCommunityIcons name="close" size={22} color={theme.textMuted} />
+              </TouchableOpacity>
+            </View>
+            <View style={[m.balBadge, { backgroundColor: '#EBF5FB' }]}>
+              <Text style={{ color: '#002855', fontWeight: '800', fontSize: 13 }}>
+                Available: ₹{balance.toLocaleString('en-IN')}
+              </Text>
+            </View>
+            <TextInput style={[m.input, { backgroundColor: theme.surface, color: theme.text, borderColor: theme.border }]}
+              placeholder="Withdraw Amount (₹)" placeholderTextColor={theme.textMuted}
+              keyboardType="numeric" value={withdrawAmt} onChangeText={setWithdrawAmt} />
+            <TextInput style={[m.input, { backgroundColor: theme.surface, color: theme.text, borderColor: theme.border }]}
+              placeholder="Your UPI ID (e.g. name@upi)" placeholderTextColor={theme.textMuted}
+              autoCapitalize="none" value={withdrawUPI} onChangeText={setWithdrawUPI} />
+            <TextInput style={[m.input, { backgroundColor: theme.surface, color: theme.text, borderColor: theme.border }]}
+              placeholder="Note (optional)" placeholderTextColor={theme.textMuted}
+              value={withdrawNote} onChangeText={setWithdrawNote} />
+            <View style={[m.infoBox, { backgroundColor: '#FEF3C7' }]}>
+              <MaterialCommunityIcons name="information" size={14} color="#92400E" />
+              <Text style={{ fontSize: 11, color: '#92400E', flex: 1, marginLeft: 6 }}>
+                Withdraw request admin review ke baad 24-48 ghante mein process hogi.
+              </Text>
+            </View>
+            <TouchableOpacity style={[m.submitBtn, { backgroundColor: '#EF4444' }]} onPress={submitWithdraw} disabled={loading}>
+              {loading
+                ? <ActivityIndicator color="#fff" />
+                : <>
+                    <MaterialCommunityIcons name="arrow-up-circle" size={18} color="#fff" />
+                    <Text style={m.submitText}>SUBMIT REQUEST</Text>
+                  </>
+              }
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Change PIN Modal ── */}
       <Modal visible={changePinModal} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <Surface style={styles.centeredModal}>
-            <Text style={styles.modalTitle}>Update Security PIN</Text>
-            <TextInput style={styles.input} placeholder="Old PIN" secureTextEntry keyboardType="numeric" maxLength={4} onChangeText={setOldPin} />
-            <TextInput style={styles.input} placeholder="New PIN" secureTextEntry keyboardType="numeric" maxLength={4} onChangeText={setNewPin} />
-            <TextInput style={styles.input} placeholder="Confirm New PIN" secureTextEntry keyboardType="numeric" maxLength={4} onChangeText={setConfirmNewPin} />
-            <Button mode="contained" onPress={handleChangePin} style={styles.submitBtn}>SAVE NEW PIN</Button>
-            <Button onPress={() => setChangePinModal(false)} color="red">CANCEL</Button>
-          </Surface>
+        <View style={m.overlay}>
+          <View style={[m.sheet, { backgroundColor: theme.card }]}>
+            <View style={m.handle} />
+            <Text style={[m.title, { color: theme.primary, textAlign: 'center', marginBottom: 16 }]}>Change Security PIN</Text>
+            {[
+              { ph: 'Current PIN', fn: setOldPin },
+              { ph: 'New PIN', fn: setNewPin },
+              { ph: 'Confirm New PIN', fn: setConfirmNewPin },
+            ].map((inp, i) => (
+              <TextInput key={i}
+                style={[m.pinInput, { backgroundColor: theme.surface, color: theme.text, borderColor: theme.border }]}
+                placeholder={inp.ph} placeholderTextColor={theme.textMuted}
+                secureTextEntry keyboardType="numeric" maxLength={4}
+                onChangeText={inp.fn}
+              />
+            ))}
+            <TouchableOpacity style={m.submitBtn} onPress={handleChangePin} disabled={loading}>
+              {loading ? <ActivityIndicator color="#fff" /> : <Text style={m.submitText}>SAVE NEW PIN</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setChangePinModal(false)} style={m.cancelBtn}>
+              <Text style={[m.cancelText, { color: theme.textMuted }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
 
-      <Modal visible={showPinModal} transparent>
-        <View style={styles.modalOverlay}>
-          <Surface style={styles.miniModal}>
-            <Text style={styles.modalTitle}>Security PIN</Text>
-            <TextInput style={styles.pinInputSmall} secureTextEntry keyboardType="numeric" maxLength={4} onChangeText={setInputPin} />
-            <Button mode="contained" onPress={verifyPinForBalance} style={styles.submitBtn}>VERIFY</Button>
-            <Button onPress={() => setShowPinModal(false)}>CANCEL</Button>
-          </Surface>
+      {/* ── PIN Verify Modal ── */}
+      <Modal visible={pinModal} transparent animationType="fade">
+        <View style={[m.overlay, { justifyContent: 'center' }]}>
+          <View style={[m.miniSheet, { backgroundColor: theme.card }]}>
+            <MaterialCommunityIcons name="lock" size={36} color={theme.primary} style={{ alignSelf: 'center', marginBottom: 12 }} />
+            <Text style={[m.title, { color: theme.primary, textAlign: 'center', marginBottom: 16 }]}>Enter PIN</Text>
+            <TextInput
+              style={[m.pinInput, { backgroundColor: theme.surface, color: theme.text, borderColor: theme.border }]}
+              secureTextEntry keyboardType="numeric" maxLength={4}
+              onChangeText={setInputPin} placeholder="••••" placeholderTextColor={theme.textMuted}
+              autoFocus
+            />
+            <TouchableOpacity style={m.submitBtn} onPress={verifyPinForBalance}>
+              <Text style={m.submitText}>VERIFY</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setPinModal(false)} style={m.cancelBtn}>
+              <Text style={[m.cancelText, { color: theme.textMuted }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
-    </View>
+
+      {/* ── Monthly Stats Modal ── */}
+      <Modal visible={statModal} transparent animationType="slide">
+        <View style={m.overlay}>
+          <View style={[m.sheet, { backgroundColor: theme.card }]}>
+            <View style={m.handle} />
+            <View style={m.headerRow}>
+              <Text style={[m.title, { color: theme.primary }]}>Monthly Summary</Text>
+              <TouchableOpacity onPress={() => setStatModal(false)}>
+                <MaterialCommunityIcons name="close" size={22} color={theme.textMuted} />
+              </TouchableOpacity>
+            </View>
+            {[
+              { label: 'Total Credit', val: `₹${monthlySummary.credited}`, color: '#10B981', icon: 'arrow-down-circle' },
+              { label: 'Total Spent',  val: `₹${monthlySummary.debited}`,  color: '#EF4444', icon: 'arrow-up-circle'   },
+              { label: 'Transactions', val: `${monthlySummary.count}`,      color: '#3B82F6', icon: 'swap-horizontal'   },
+              { label: 'Net',          val: `₹${monthlySummary.credited - monthlySummary.debited}`, color: '#8B5CF6', icon: 'calculator' },
+            ].map((row, i) => (
+              <View key={i} style={[m.statRow, { backgroundColor: theme.surface }]}>
+                <View style={[m.statIcon, { backgroundColor: row.color + '20' }]}>
+                  <MaterialCommunityIcons name={row.icon} size={20} color={row.color} />
+                </View>
+                <Text style={[m.statLabel, { color: theme.textMuted }]}>{row.label}</Text>
+                <Text style={[m.statVal, { color: row.color }]}>{row.val}</Text>
+              </View>
+            ))}
+            <TouchableOpacity
+              style={[m.submitBtn, { backgroundColor: '#10B981', marginTop: 8 }]}
+              onPress={() => { setStatModal(false); downloadStatement(); }}
+            >
+              <MaterialCommunityIcons name="file-download" size={18} color="#fff" />
+              <Text style={m.submitText}>DOWNLOAD STATEMENT</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
-  setupContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 30 },
-  setupTitle: { fontSize: 24, fontWeight: '900', color: '#003366', marginBottom: 20 },
-  pinInput: { backgroundColor: '#fff', width: '100%', padding: 15, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', textAlign: 'center', fontSize: 20, letterSpacing: 10, marginBottom: 15 },
-  btn: { backgroundColor: '#003366', width: '100%', padding: 5, borderRadius: 10 },
-  balanceCard: { backgroundColor: '#003366', margin: 20, padding: 30, borderRadius: 25, elevation: 8 },
-  label: { color: '#94A3B8', fontSize: 12, textTransform: 'uppercase' },
-  balanceRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 },
-  amountText: { color: '#fff', fontSize: 32, fontWeight: '900' },
-  pendingAlert: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFBEB', marginHorizontal: 20, padding: 12, borderRadius: 15, borderLeftWidth: 4, borderColor: '#F59E0B', marginBottom: 15 },
-  pendingTitle: { fontWeight: 'bold', color: '#92400E', fontSize: 14 },
-  pendingSub: { fontSize: 10, color: '#B45309' },
-  actionRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 20 },
-  actionBtn: { alignItems: 'center' },
-  iconCircle: { width: 60, height: 60, borderRadius: 15, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center', elevation: 3, marginBottom: 8 },
-  actionLabel: { fontWeight: 'bold', color: '#475569', fontSize: 11 },
-  sectionTitle: { fontSize: 16, fontWeight: '900', marginHorizontal: 20, marginBottom: 12, color: '#1E293B' },
-  txItem: { flexDirection: 'row', alignItems: 'center', padding: 12, marginHorizontal: 20, marginBottom: 10, borderRadius: 15, backgroundColor: '#fff', elevation: 1 },
-  txIcon: { width: 40, height: 40, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
-  centeredModal: { width: '92%', backgroundColor: '#fff', borderRadius: 25, padding: 20 },
-  miniModal: { width: '80%', padding: 20, borderRadius: 20, backgroundColor: '#fff', alignItems: 'center' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 },
-  modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#003366' },
-  qrSection: { alignItems: 'center', marginBottom: 20 },
-  qrBorder: { padding: 10, backgroundColor: '#fff', borderRadius: 15, elevation: 4 },
-  upiIdText: { fontSize: 16, fontWeight: '900', color: '#003366', marginTop: 10 },
-  input: { width: '100%', backgroundColor: '#F8FAFC', padding: 12, borderRadius: 10, marginBottom: 12, borderWidth: 1, borderColor: '#F1F5F9' },
-  uploadBox: { height: 120, borderWidth: 2, borderColor: '#E2E8F0', borderStyle: 'dashed', borderRadius: 15, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F8FAFC', marginBottom: 15 },
-  preview: { width: '100%', height: '100%', borderRadius: 13 },
-  submitBtn: { backgroundColor: '#10B981', padding: 8, borderRadius: 12, width: '100%', marginVertical: 5 },
-  pinInputSmall: { backgroundColor: '#F8FAFC', width: '90%', padding: 12, borderRadius: 10, textAlign: 'center', fontSize: 24, letterSpacing: 10, marginVertical: 15, borderWidth: 1, borderColor: '#E2E8F0' }
+function makeStyles(theme) {
+  return StyleSheet.create({
+    safe: { flex: 1 },
+
+    // Setup
+    setupWrap:    { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 30 },
+    setupIcon:    { width: 100, height: 100, borderRadius: 30, justifyContent: 'center', alignItems: 'center', marginBottom: 20 },
+    setupTitle:   { fontSize: 22, fontWeight: '900', marginBottom: 8 },
+    setupSub:     { fontSize: 13, textAlign: 'center', marginBottom: 28, lineHeight: 20 },
+    pinInput:     { width: '100%', padding: 15, borderRadius: 14, borderWidth: 1.5, textAlign: 'center', fontSize: 22, letterSpacing: 12, marginBottom: 14 },
+    activateBtn:  { flexDirection: 'row', alignItems: 'center', gap: 8, width: '100%', padding: 17, borderRadius: 14, justifyContent: 'center', marginTop: 8 },
+    activateBtnText: { color: '#fff', fontWeight: '900', fontSize: 15 },
+
+    // Balance card
+    balanceCard: { margin: 16, padding: 28, borderRadius: 24, elevation: 8 },
+    balLabel:    { color: 'rgba(255,255,255,0.65)', fontSize: 11, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 1 },
+    balRow:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 },
+    balAmt:      { color: '#fff', fontSize: 34, fontWeight: '900' },
+    eyeBtn:      { padding: 4 },
+    upiRow:      { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 14, opacity: 0.6 },
+    upiText:     { color: '#fff', fontSize: 12, fontWeight: '600' },
+
+    // Pending
+    pendingBanner: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 10, padding: 12, borderRadius: 14, backgroundColor: '#FEF3C7', borderLeftWidth: 4, borderLeftColor: '#F59E0B' },
+    pendingTitle:  { fontWeight: '800', color: '#92400E', fontSize: 13 },
+    pendingSub:    { fontSize: 11, color: '#B45309', marginTop: 1 },
+
+    // Summary card
+    summaryCard:  { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 10, padding: 14, borderRadius: 16, elevation: 1 },
+    summaryLeft:  { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
+    summaryTitle: { fontWeight: '800', fontSize: 13 },
+    summaryStats: { flexDirection: 'row', alignItems: 'center', gap: 10, marginRight: 8 },
+    summaryStat:  { alignItems: 'center' },
+    statDivider:  { width: 1, height: 24 },
+    statUp:       { fontSize: 13, fontWeight: '800', color: '#10B981' },
+    statDown:     { fontSize: 13, fontWeight: '800', color: '#EF4444' },
+    statCount:    { fontSize: 13, fontWeight: '800' },
+    statLbl:      { fontSize: 9, fontWeight: '700', textTransform: 'uppercase', marginTop: 1 },
+
+    // Action grid
+    actionGrid:  { flexDirection: 'row', marginHorizontal: 16, gap: 10, marginBottom: 14 },
+    actionBtn:   { flex: 1, alignItems: 'center', paddingVertical: 14, borderRadius: 16, elevation: 1, gap: 6 },
+    actionLabel: { fontSize: 10, fontWeight: '700', textAlign: 'center' },
+
+    // Filter
+    filterRow:    { flexDirection: 'row', marginHorizontal: 16, gap: 8, marginBottom: 14 },
+    filterTab:    { flex: 1, paddingVertical: 8, borderRadius: 20, borderWidth: 1.5, borderColor: theme.border, alignItems: 'center' },
+    filterTabActive: { backgroundColor: '#002855', borderColor: '#002855' },
+    filterText:   { fontSize: 12, fontWeight: '700', color: theme.textMuted },
+    filterTextActive: { color: '#fff' },
+
+    // Transaction
+    txRow:  { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginBottom: 8, padding: 14, borderRadius: 16, elevation: 1 },
+    txIcon: { width: 42, height: 42, borderRadius: 13, justifyContent: 'center', alignItems: 'center' },
+    txRemark: { fontSize: 13, fontWeight: '700' },
+    txTime:   { fontSize: 10, marginTop: 2 },
+    txAmt:    { fontSize: 15, fontWeight: '900' },
+
+    // Empty
+    emptyWrap: { alignItems: 'center', paddingTop: 50, opacity: 0.5 },
+    emptyText: { marginTop: 12, fontWeight: '700', fontSize: 14 },
+  });
+}
+
+// Modal styles
+const m = StyleSheet.create({
+  overlay:    { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'flex-end' },
+  sheet:      { borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 20, paddingBottom: 34, maxHeight: '92%' },
+  miniSheet:  { borderRadius: 24, padding: 24, marginHorizontal: 30 },
+  handle:     { width: 40, height: 4, backgroundColor: '#E2E8F0', borderRadius: 2, alignSelf: 'center', marginBottom: 18 },
+  headerRow:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
+  title:      { fontSize: 18, fontWeight: '900' },
+  qrWrap:     { alignItems: 'center', marginBottom: 18, backgroundColor: '#fff', padding: 16, borderRadius: 18 },
+  upiId:      { fontSize: 15, fontWeight: '900', marginTop: 10 },
+  upiName:    { fontSize: 12, fontWeight: '600', marginTop: 2 },
+  input:      { padding: 14, borderRadius: 14, marginBottom: 12, borderWidth: 1.5, fontSize: 14, fontWeight: '600' },
+  pinInput:   { padding: 14, borderRadius: 14, marginBottom: 12, borderWidth: 1.5, textAlign: 'center', fontSize: 22, letterSpacing: 12 },
+  uploadBox:  { height: 110, borderWidth: 2, borderStyle: 'dashed', borderRadius: 16, justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
+  preview:    { width: '100%', height: '100%', borderRadius: 14 },
+  balBadge:   { padding: 12, borderRadius: 12, marginBottom: 14 },
+  infoBox:    { flexDirection: 'row', alignItems: 'flex-start', padding: 10, borderRadius: 10, marginBottom: 14 },
+  submitBtn:  { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8, backgroundColor: '#002855', padding: 16, borderRadius: 14, marginBottom: 8 },
+  submitText: { color: '#fff', fontWeight: '900', fontSize: 14 },
+  cancelBtn:  { padding: 12, alignItems: 'center' },
+  cancelText: { fontWeight: '700', fontSize: 13 },
+  statRow:    { flexDirection: 'row', alignItems: 'center', padding: 14, borderRadius: 14, marginBottom: 8, gap: 12 },
+  statIcon:   { width: 38, height: 38, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  statLabel:  { flex: 1, fontSize: 13, fontWeight: '700' },
+  statVal:    { fontSize: 16, fontWeight: '900' },
 });

@@ -8,3 +8,4 @@ node_modules/
 dist/
 google-services.json
 service-account.json
+src/api/firebaseConfig.js

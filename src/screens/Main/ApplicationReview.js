@@ -10,6 +10,8 @@ import {
 } from 'firebase/firestore';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as Crypto from 'expo-crypto';
+import Constants from 'expo-constants';
 
 export default function ApplicationReview({ route, navigation }) {
   const { formData, feeDetails, jobId, jobTitle, documents } = route.params || {}; 
@@ -35,7 +37,7 @@ export default function ApplicationReview({ route, navigation }) {
   const [userPin, setUserPin] = useState('');
   const [utr, setUtr] = useState('');
   const [screenshot, setScreenshot] = useState(null);
-  const [walletData, setWalletData] = useState({ balance: 0, realPin: '' });
+  const [walletData, setWalletData] = useState({ balance: 0, pinHash: '' });
 
   const userId = auth.currentUser?.uid;
   const CLOUDINARY_URL = "https://api.cloudinary.com/v1_1/dxuurwexl/image/upload";
@@ -52,29 +54,32 @@ export default function ApplicationReview({ route, navigation }) {
       const data = userSnap.data();
       setWalletData({
         balance: data.walletBalance || 0,
-        realPin: data.transactionPin || data.walletPin || data.pin || '' 
+        // ✅ FIX: walletPinHash (new hashed) ya walletPin (purana plaintext) dono support
+        pinHash: data.walletPinHash || data.walletPin || data.transactionPin || data.pin || '',
+        isHashed: !!data.walletPinHash, // kya naya hashed system use ho raha hai
       });
     }
   };
 
   // --- 🚀 ✨ TELEGRAM NOTIFICATION LOGIC ---
   const sendTelegramNotification = async (appId, title, data, total) => {
-    const BOT_TOKEN = "7178445265:AAFRMgEnC_t10ivkjhlEu9VCvT7JoJy-oB0"; // 👈 Yahan apna Bot Token dalein
-    const CHAT_ID = "7882393836";     // 👈 Yahan apna Group Chat ID dalein
+    const BOT_TOKEN = Constants?.expoConfig?.extra?.telegramBotToken;
+    const CHAT_ID = Constants?.expoConfig?.extra?.telegramChatId;
+    if (!BOT_TOKEN || !CHAT_ID) return;
 
-    let message = `🚀 *NEW APPLICATION RECEIVED* 🚀\n\n`;
+    const adminUrl = `https://sewaone-admin.netlify.app/applications`;
+    let message = `🚀 *NEW JOB APPLICATION!* 🚀\n\n`;
     message += `🆔 *Tracking ID:* ${appId}\n`;
-    message += `💼 *Job Name:* ${title}\n`;
-    message += `💰 *Total Paid:* ₹${total}\n`;
-    message += `💳 *Method:* ${selectedMethod?.toUpperCase()}\n`;
-    message += `--------------------------\n`;
-    message += `👤 *USER FORM DATA:*\n`;
-    
+    message += `💼 *Job:* ${title}\n`;
+    message += `💰 *Paid:* ₹${total} via ${selectedMethod?.toUpperCase()}\n`;
+    message += `⏰ *Time:* ${new Date().toLocaleString('en-IN')}\n`;
+    message += `\n📋 *USER DATA:*\n`;
     Object.entries(data).forEach(([key, value]) => {
       message += `🔹 *${key}:* ${value}\n`;
     });
-
-    message += `\n📍 _SewaOne Admin Alert System_`;
+    message += `\n⚡️ *Quick Action:*\n`;
+    message += `👉 [Admin Panel Kholein](${adminUrl})\n`;
+    message += `\n📍 _SewaOne Job Alert_`;
 
     try {
       await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -91,48 +96,102 @@ export default function ApplicationReview({ route, navigation }) {
 
   // --- 🎫 Coupon Logic ---
   const handleApplyCoupon = async () => {
-    if (!couponCode) return Alert.alert("Error", "Code dalo bhai!");
+    if (!couponCode.trim()) return Alert.alert("Error", "Coupon code dalo!");
     if (!userId) return Alert.alert("Error", "User details missing.");
     setCouponLoading(true);
 
     try {
-      const q = query(collection(db, "vouchers"), where("code", "==", couponCode.toUpperCase()), where("isActive", "==", true));
+      const q = query(
+        collection(db, "vouchers"),
+        where("code", "==", couponCode.toUpperCase()),
+        where("isActive", "==", true)
+      );
       const snap = await getDocs(q);
 
       if (snap.empty) {
-        setCouponLoading(false);
-        return Alert.alert("Invalid", "Coupon galat hai.");
+        return Alert.alert("Invalid", "Yeh coupon code galat hai ya expire ho gaya.");
       }
 
-      const voucher = snap.docs[0].data();
-      
+      const voucherDoc = snap.docs[0];
+      const voucher = voucherDoc.data();
+      const voucherRef = doc(db, "vouchers", voucherDoc.id);
+
+      // ✅ 1. Expiry date check
+      if (voucher.expiryDate && new Date(voucher.expiryDate) < new Date()) {
+        return Alert.alert("Expired", "Yeh coupon expire ho gaya hai.");
+      }
+
+      // ✅ 2. Usage limit check
+      const usedCount = voucher.usedCount || 0;
+      const usageLimit = voucher.usageLimit || 999;
+      if (usedCount >= usageLimit) {
+        return Alert.alert("Limit Full", "Is coupon ki limit khatam ho gayi hai.");
+      }
+
+      // ✅ 3. New user only check
       if (voucher.targetUsers === 'new') {
-        const snapApps = await getDocs(query(collection(db, "applications"), where("userId", "==", userId)));
+        const snapApps = await getDocs(
+          query(collection(db, "applications"), where("userId", "==", userId))
+        );
         if (snapApps.size > 0) {
-          setCouponLoading(false);
-          return Alert.alert("Not Eligible", "Sirf pehle form ke liye hai!");
+          return Alert.alert("Not Eligible", "Yeh coupon sirf pehli application ke liye hai!");
         }
       }
 
-      if (voucher.allowedJobs !== 'all' && !voucher.allowedJobs.includes(jobId)) {
-        setCouponLoading(false);
-        return Alert.alert("Sorry", "Ye is job par nahi chalega.");
+      // ✅ 4. Job-specific check
+      if (voucher.allowedJobs !== 'all' && !voucher.allowedJobs?.includes(jobId)) {
+        return Alert.alert("Not Valid", "Yeh coupon is job ke liye valid nahi hai.");
       }
 
-      let calculatedDiscount = voucher.discountType === 'percentage' ? (serviceFee * voucher.discountValue) / 100 : voucher.discountValue;
+      // ✅ 5. Calculate discount
+      let calculatedDiscount = voucher.discountType === 'percentage'
+        ? Math.floor((serviceFee * voucher.discountValue) / 100)
+        : voucher.discountValue;
       if (calculatedDiscount > serviceFee) calculatedDiscount = serviceFee;
+      if (calculatedDiscount <= 0) {
+        return Alert.alert("Error", "Discount calculate nahi ho saka.");
+      }
+
+      // ✅ 6. Increment usedCount in Firestore
+      await updateDoc(voucherRef, {
+        usedCount: increment(1)
+      });
 
       setDiscount(calculatedDiscount);
       setFinalTotal(initialTotal - calculatedDiscount);
       setIsCouponApplied(true);
-      Alert.alert("Applied", `₹${calculatedDiscount} discount!`);
+      Alert.alert(
+        "Coupon Applied! 🎉",
+        `₹${calculatedDiscount} discount apply ho gayi!\nPayable: ₹${initialTotal - calculatedDiscount}`
+      );
 
-    } catch (e) { Alert.alert("Error", "Coupon verify fail."); }
-    finally { setCouponLoading(false); }
+    } catch (e) {
+      Alert.alert("Error", "Coupon verify nahi ho saka. Try again.");
+    } finally {
+      setCouponLoading(false);
+    }
   };
 
   const handleWalletPay = async () => {
-    if (String(userPin).trim() !== String(walletData.realPin).trim()) return Alert.alert("Error", "Wrong PIN!");
+    // ✅ FIX: SHA-256 hash karke compare karo
+    try {
+      let inputToCompare;
+      if (walletData.isHashed) {
+        // New system — hash karke compare karo
+        inputToCompare = await Crypto.digestStringAsync(
+          Crypto.CryptoDigestAlgorithm.SHA256,
+          String(userPin).trim()
+        );
+      } else {
+        // Old system — plaintext compare (backward compat)
+        inputToCompare = String(userPin).trim();
+      }
+      if (inputToCompare !== String(walletData.pinHash).trim()) {
+        return Alert.alert("Galat PIN", "Security PIN galat hai. Dobara try karein.");
+      }
+    } catch (e) {
+      return Alert.alert("Error", "PIN verify nahi ho saka. Try again.");
+    }
     if (walletData.balance < finalTotal) return Alert.alert("Low Balance", "Recharge wallet.");
 
     setIsSubmitting(true);

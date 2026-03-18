@@ -1,14 +1,17 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+// AUTO-REDIRECT — Yeh screen ab JobList use karti hai
+// Purana placeholder tha — ab actual data dikhata hai
+import React, { useEffect } from 'react';
+import { View, ActivityIndicator } from 'react-native';
 
-export default function LatestJobs() {
+export default function LatestJobs({ navigation, route }) {
+  useEffect(() => {
+    // Seedha JobList pe redirect karo sahi category ke saath
+    navigation.replace('JobList', { category: 'latest-jobs' });
+  }, []);
+
   return (
-    <View style={styles.center}>
-      <Text style={styles.text}>Latest Govt Jobs List Coming Soon!</Text>
+    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F8FAFC' }}>
+      <ActivityIndicator size="large" color="#003366" />
     </View>
   );
 }
-const styles = StyleSheet.create({
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' },
-  text: { fontSize: 18, fontWeight: 'bold', color: '#003366' }
-});

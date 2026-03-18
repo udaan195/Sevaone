@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView } from 'react-native';
 import { TextInput, Button, useTheme } from 'react-native-paper';
 import { auth, db } from '../../api/firebaseConfig';
-import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth'; 
+import { signInWithEmailAndPassword } from 'firebase/auth';
 import { collection, query, where, getDocs } from 'firebase/firestore'; 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 
@@ -12,6 +12,26 @@ export default function LoginScreen({ navigation }) {
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [attempts, setAttempts] = useState(0);      // ✅ Rate limit — fail count
+  const [lockUntil, setLockUntil] = useState(null); // ✅ Lock timestamp
+  const [countdown, setCountdown] = useState(0);    // ✅ Countdown timer
+
+  // Countdown timer
+  React.useEffect(() => {
+    if (!lockUntil) return;
+    const interval = setInterval(() => {
+      const remaining = Math.ceil((lockUntil - Date.now()) / 1000);
+      if (remaining <= 0) {
+        setLockUntil(null);
+        setCountdown(0);
+        setAttempts(0);
+        clearInterval(interval);
+      } else {
+        setCountdown(remaining);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [lockUntil]);
 
   // --- ✨ Function: Email Masking (Privacy) ---
   const maskEmail = (email) => {
@@ -22,57 +42,60 @@ export default function LoginScreen({ navigation }) {
 
   // --- 🚀 Function: Hybrid Login Logic ---
   const handleLogin = async () => {
-  setLoading(true);
-  try {
-    let finalEmail = userInput.trim();
-
-    // 1. Agar Mobile dala hai (10 digits)
-    if (!finalEmail.includes('@') && finalEmail.length === 10) {
-      const q = query(collection(db, "users"), where("phone", "==", finalEmail));
-      const snap = await getDocs(q);
-
-      if (!snap.empty) {
-        // 🔥 Database se sahi email uthao jo Auth mein registered hai
-        finalEmail = snap.docs[0].data().email;
-      } else {
-        // Fallback agar Firestore mein user nahi mila
-        finalEmail = `${finalEmail}@sewaone.com`;
-      }
+    // ✅ Rate limit check — locked hai?
+    if (lockUntil && Date.now() < lockUntil) {
+      Alert.alert('Too Many Attempts', `Dobara try karo ${countdown} seconds baad.`);
+      return;
     }
-
-    // 2. Auth Login
-    await signInWithEmailAndPassword(auth, finalEmail, password);
-  } catch (err) {
-    Alert.alert("Login Failed", "Aleart, Please Enter Valid Email/Mobile or Password.");
-  } finally { setLoading(false); }
-};
-
-  // --- 🔑 Function: Forgot Password Logic ---
-  const handleForgotPassword = async () => {
-    if (!userInput) {
-      Alert.alert("Input Error", "Please Enter Your Registered Email/Mobile.");
+    if (!userInput.trim() || !password) {
+      Alert.alert('Error', 'Email/Mobile aur Password dono bharo.');
       return;
     }
 
     setLoading(true);
     try {
-      let targetEmail = userInput.trim();
+      let finalEmail = userInput.trim();
 
-      if (!targetEmail.includes('@') && targetEmail.length === 10) {
-        const q = query(collection(db, "users"), where("phone", "==", targetEmail));
+      // Mobile number se email dhundho
+      if (!finalEmail.includes('@') && finalEmail.length === 10) {
+        const q = query(collection(db, 'users'), where('phone', '==', finalEmail));
         const snap = await getDocs(q);
-        targetEmail = !snap.empty ? snap.docs[0].data().email : `${targetEmail}@sewaone.com`;
+        finalEmail = !snap.empty
+          ? snap.docs[0].data().email
+          : `${finalEmail}@sewaone.com`;
       }
 
-      await sendPasswordResetEmail(auth, targetEmail);
-      const masked = maskEmail(targetEmail);
-      Alert.alert("Link Sent ✅", `Password reset link  Send to this email (${masked}) Check mail to update Your Password.`);
+      await signInWithEmailAndPassword(auth, finalEmail, password);
+      // ✅ Success — attempts reset
+      setAttempts(0);
+      setLockUntil(null);
     } catch (err) {
-      Alert.alert("Error", "Password reset link not send Please check Credentieal.");
+      // ✅ Rate limiting — attempt count badao
+      const newAttempts = attempts + 1;
+      setAttempts(newAttempts);
+
+      if (newAttempts >= 5) {
+        // 5 fails — 60 second lock
+        const lockTime = Date.now() + 60 * 1000;
+        setLockUntil(lockTime);
+        Alert.alert(
+          '🔒 Account Temporarily Locked',
+          '5 galat attempts ke baad 60 seconds ke liye lock ho gaya. Apna password check karo.'
+        );
+      } else if (newAttempts >= 3) {
+        Alert.alert(
+          'Login Failed ⚠️',
+          `Galat credentials. ${5 - newAttempts} attempts baaki hain, phir account lock ho jayega.`
+        );
+      } else {
+        Alert.alert('Login Failed', 'Email/Mobile ya Password galat hai.');
+      }
     } finally {
       setLoading(false);
     }
   };
+
+  // Forgot password → dedicated screen
 
   return (
     <ScrollView contentContainerStyle={[styles.container, {backgroundColor: colors.background}]}>
@@ -108,18 +131,34 @@ export default function LoginScreen({ navigation }) {
           right={<TextInput.Icon icon={showPass ? "eye-off" : "eye"} onPress={()=>setShowPass(!showPass)} />}
         />
 
-        <Button 
-          mode="contained" 
-          onPress={handleLogin} 
-          style={styles.loginBtn}
+        {/* ✅ Rate limit — locked toh countdown dikho */}
+        {lockUntil && (
+          <View style={{ backgroundColor: '#FEE2E2', padding: 12, borderRadius: 10, marginBottom: 12, alignItems: 'center' }}>
+            <Text style={{ color: '#EF4444', fontWeight: '800', fontSize: 13 }}>
+              🔒 {countdown} seconds baad try karo
+            </Text>
+          </View>
+        )}
+        {attempts > 0 && !lockUntil && (
+          <View style={{ backgroundColor: '#FEF3C7', padding: 8, borderRadius: 8, marginBottom: 10, alignItems: 'center' }}>
+            <Text style={{ color: '#B45309', fontWeight: '700', fontSize: 12 }}>
+              ⚠️ {5 - attempts} attempts baaki hain
+            </Text>
+          </View>
+        )}
+        <Button
+          mode="contained"
+          onPress={handleLogin}
+          style={[styles.loginBtn, (loading || !!lockUntil) && { opacity: 0.6 }]}
+          disabled={loading || !!lockUntil}
           loading={loading}
           labelStyle={styles.btnLabel}
         >
-          SECURE LOGIN
+          {lockUntil ? `LOCKED (${countdown}s)` : 'SECURE LOGIN'}
         </Button>
 
         <View style={styles.footerLinks}>
-          <TouchableOpacity onPress={handleForgotPassword}>
+          <TouchableOpacity onPress={() => navigation.navigate('ForgotPassword')}>
             <Text style={{color: colors.primary, fontWeight: '700'}}>Forgot Password?</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={() => navigation.navigate('Register')}>
