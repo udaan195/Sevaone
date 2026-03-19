@@ -61,6 +61,11 @@ export default function ApplicationReview({ route, navigation }) {
     }
   };
 
+  // --- 🚀 ✨ TELEGRAM NOTIFICATION LOGIC ---
+  const sendTelegramNotification = async (appId, title, data, total) => {
+    const BOT_TOKEN = Constants?.expoConfig?.extra?.telegramBotToken;
+    const CHAT_ID = Constants?.expoConfig?.extra?.telegramChatId;
+    if (!BOT_TOKEN || !CHAT_ID) return;
 
     let message = `🚀 *NEW APPLICATION RECEIVED* 🚀\n\n`;
     message += `🆔 *Tracking ID:* ${appId}\n`;
@@ -77,9 +82,11 @@ export default function ApplicationReview({ route, navigation }) {
     message += `\n📍 _SewaOne Admin Alert System_`;
 
     try {
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          chat_id: CHAT_ID,
           text: message,
           parse_mode: 'Markdown',
         }),
@@ -220,6 +227,8 @@ export default function ApplicationReview({ route, navigation }) {
         timestamp: serverTimestamp()
       });
 
+      // 2. ✨ Send Telegram Notification
+      await sendTelegramNotification(trackingId, jobTitle, formData, finalTotal);
 
       navigation.navigate('SubmitSuccess', { trackingId });
     } catch (e) { Alert.alert("Error", "Submit failed."); }
