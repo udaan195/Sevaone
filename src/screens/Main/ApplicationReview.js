@@ -61,37 +61,30 @@ export default function ApplicationReview({ route, navigation }) {
     }
   };
 
-  // --- 🚀 ✨ TELEGRAM NOTIFICATION LOGIC ---
-  const sendTelegramNotification = async (appId, title, data, total) => {
-    const BOT_TOKEN = Constants?.expoConfig?.extra?.telegramBotToken;
-    const CHAT_ID = Constants?.expoConfig?.extra?.telegramChatId;
-    if (!BOT_TOKEN || !CHAT_ID) return;
 
-    const adminUrl = `https://sewaone-admin.netlify.app/applications`;
-    let message = `🚀 *NEW JOB APPLICATION!* 🚀\n\n`;
+    let message = `🚀 *NEW APPLICATION RECEIVED* 🚀\n\n`;
     message += `🆔 *Tracking ID:* ${appId}\n`;
-    message += `💼 *Job:* ${title}\n`;
-    message += `💰 *Paid:* ₹${total} via ${selectedMethod?.toUpperCase()}\n`;
-    message += `⏰ *Time:* ${new Date().toLocaleString('en-IN')}\n`;
-    message += `\n📋 *USER DATA:*\n`;
+    message += `💼 *Job Name:* ${title}\n`;
+    message += `💰 *Total Paid:* ₹${total}\n`;
+    message += `💳 *Method:* ${selectedMethod?.toUpperCase()}\n`;
+    message += `--------------------------\n`;
+    message += `👤 *USER FORM DATA:*\n`;
+    
     Object.entries(data).forEach(([key, value]) => {
       message += `🔹 *${key}:* ${value}\n`;
     });
-    message += `\n⚡️ *Quick Action:*\n`;
-    message += `👉 [Admin Panel Kholein](${adminUrl})\n`;
-    message += `\n📍 _SewaOne Job Alert_`;
+
+    message += `\n📍 _SewaOne Admin Alert System_`;
 
     try {
-      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          chat_id: CHAT_ID,
           text: message,
           parse_mode: 'Markdown',
         }),
       });
-    } catch (e) { console.log("Telegram Notify Error:", e); }
+    } catch (e) { }
   };
 
   // --- 🎫 Coupon Logic ---
@@ -227,8 +220,6 @@ export default function ApplicationReview({ route, navigation }) {
         timestamp: serverTimestamp()
       });
 
-      // 2. ✨ Send Telegram Notification
-      await sendTelegramNotification(trackingId, jobTitle, formData, finalTotal);
 
       navigation.navigate('SubmitSuccess', { trackingId });
     } catch (e) { Alert.alert("Error", "Submit failed."); }

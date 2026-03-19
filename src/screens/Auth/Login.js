@@ -62,7 +62,7 @@ export default function LoginScreen({ navigation }) {
         const snap = await getDocs(q);
         finalEmail = !snap.empty
           ? snap.docs[0].data().email
-          : `${finalEmail}@sewaone.com`;
+          : `${finalEmail}@sewaone.in`;
       }
 
       await signInWithEmailAndPassword(auth, finalEmail, password);

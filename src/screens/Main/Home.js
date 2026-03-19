@@ -6,9 +6,10 @@ import {
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { auth, db } from '../../api/firebaseConfig';
 import {
-  doc, onSnapshot, collection, query, orderBy, where,
+  doc, onSnapshot, collection, query, orderBy, where, limit,
 } from 'firebase/firestore';
 import { useAppTheme } from '../../context/ThemeContext';
+import NetInfo from '@react-native-community/netinfo';
 import { SkeletonBanner, SkeletonGrid } from '../../components/SkeletonLoader';
 
 const { width } = Dimensions.get('window');
@@ -55,6 +56,8 @@ export default function HomeScreen({ navigation }) {
   const bannerRef   = useRef(null);
   const [tickerIndex, setTickerIndex] = useState(0);
   const [bannerIndex, setBannerIndex] = useState(0);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [isOffline, setIsOffline]     = useState(false);
   const greeting = getGreeting();
 
   useEffect(() => {
@@ -115,9 +118,25 @@ export default function HomeScreen({ navigation }) {
       if (snap.exists() && snap.data().sections) setSections(snap.data().sections);
     });
 
+    // ✅ Unread notifications count
+    const unsubNoti = onSnapshot(
+      query(collection(db, 'notifications'), orderBy('timestamp', 'desc'), limit(20)),
+      snap => {
+        const unread = snap.docs.filter(d => !d.data().isRead).length;
+        setUnreadCount(unread);
+        setHasNewNoti(unread > 0);
+      }
+    );
+
+    // ✅ Offline detection
+    const unsubNet = NetInfo.addEventListener(state => {
+      setIsOffline(!state.isConnected || !state.isInternetReachable);
+    });
+
     return () => {
       unsubUser(); unsubBanners(); unsubUpdates();
-      unsubApps(); unsubFeatures(); unsubLayout();
+      unsubApps(); unsubFeatures(); unsubLayout(); unsubNoti();
+      unsubNet();
     };
   }, []);
 
@@ -172,10 +191,20 @@ export default function HomeScreen({ navigation }) {
           {features.notifications !== false && (
             <TouchableOpacity
               style={styles.bellWrap}
-              onPress={() => { navigation.navigate('Notifications'); setHasNewNoti(false); }}
+              onPress={() => { navigation.navigate('Notifications'); setHasNewNoti(false); setUnreadCount(0); }}
             >
-              <MaterialCommunityIcons name="bell-outline" size={26} color={theme.primary} />
-              {hasNewNoti && <View style={styles.dot} />}
+              <MaterialCommunityIcons
+                name={unreadCount > 0 ? 'bell-ring' : 'bell-outline'}
+                size={26}
+                color={unreadCount > 0 ? theme.primary : theme.primary}
+              />
+              {unreadCount > 0 && (
+                <View style={styles.bellBadge}>
+                  <Text style={styles.bellBadgeText}>
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </Text>
+                </View>
+              )}
             </TouchableOpacity>
           )}
           {features.wallet !== false && (
@@ -191,6 +220,14 @@ export default function HomeScreen({ navigation }) {
           )}
         </View>
       </View>
+
+      {/* ✅ Offline Banner */}
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <MaterialCommunityIcons name="wifi-off" size={16} color="#fff" />
+          <Text style={styles.offlineText}>Internet nahi hai — Cached data dikh raha hai</Text>
+        </View>
+      )}
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
 
@@ -209,28 +246,77 @@ export default function HomeScreen({ navigation }) {
 
         {/* ── Stats Row ── */}
         <View style={[styles.statsRow, { backgroundColor: theme.card }]}>
-          {[
-            { icon: 'file-document-multiple', label: 'Applications', val: appCount.total,     color: '#3B82F6' },
-            { icon: 'clock-outline',          label: 'Active',       val: appCount.active,    color: '#F59E0B' },
-            { icon: 'check-circle-outline',   label: 'Completed',    val: appCount.completed, color: '#10B981' },
-            { icon: 'star-face',              label: 'For You',      val: null,               color: '#8B5CF6',
-              onPress: () => navigation.navigate('Recommended'), label2: 'Matches' },
-          ].map((s, i) => (
-            <TouchableOpacity
-              key={i} style={styles.statItem}
-              onPress={s.onPress} disabled={!s.onPress}
-              activeOpacity={s.onPress ? 0.7 : 1}
-            >
-              <MaterialCommunityIcons name={s.icon} size={20} color={s.color} />
-              <Text style={[styles.statVal, { color: s.onPress ? s.color : theme.text }]}>
-                {s.val !== null ? s.val : s.label2}
-              </Text>
-              <Text style={[styles.statLabel, { color: theme.textMuted }]}>{s.label}</Text>
-            </TouchableOpacity>
-          ))}
+
+          <TouchableOpacity
+            style={styles.statItem}
+            onPress={() => navigation.navigate('ApplicationsScreen')}
+            activeOpacity={0.75}
+          >
+            <View style={[styles.statIconBg, { backgroundColor: '#EBF5FB' }]}>
+              <MaterialCommunityIcons name="file-document-multiple" size={20} color="#3B82F6" />
+            </View>
+            <Text style={[styles.statVal, { color: theme.text }]}>{appCount.total}</Text>
+            <Text style={[styles.statLabel, { color: theme.textMuted }]}>Applications</Text>
+          </TouchableOpacity>
+
+          <View style={[styles.statDivider, { backgroundColor: theme.border }]} />
+
+          <TouchableOpacity
+            style={styles.statItem}
+            onPress={() => navigation.navigate('ApplicationsScreen')}
+            activeOpacity={0.75}
+          >
+            <View style={[styles.statIconBg, { backgroundColor: '#FEF3C7' }]}>
+              <MaterialCommunityIcons name="clock-fast" size={20} color="#F59E0B" />
+            </View>
+            <Text style={[styles.statVal, { color: theme.text }]}>{appCount.active}</Text>
+            <Text style={[styles.statLabel, { color: theme.textMuted }]}>Active</Text>
+          </TouchableOpacity>
+
+          <View style={[styles.statDivider, { backgroundColor: theme.border }]} />
+
+          <TouchableOpacity
+            style={styles.statItem}
+            onPress={() => navigation.navigate('ApplicationsScreen')}
+            activeOpacity={0.75}
+          >
+            <View style={[styles.statIconBg, { backgroundColor: '#DCFCE7' }]}>
+              <MaterialCommunityIcons name="check-decagram" size={20} color="#10B981" />
+            </View>
+            <Text style={[styles.statVal, { color: theme.text }]}>{appCount.completed}</Text>
+            <Text style={[styles.statLabel, { color: theme.textMuted }]}>Completed</Text>
+          </TouchableOpacity>
+
+          <View style={[styles.statDivider, { backgroundColor: theme.border }]} />
+
+          <TouchableOpacity
+            style={styles.statItem}
+            onPress={() => navigation.navigate('Recommended')}
+            activeOpacity={0.75}
+          >
+            <View style={[styles.statIconBg, { backgroundColor: '#F3E8FF' }]}>
+              <MaterialCommunityIcons name="star-circle" size={20} color="#8B5CF6" />
+            </View>
+            <Text style={[styles.statVal, { color: '#8B5CF6' }]}>New</Text>
+            <Text style={[styles.statLabel, { color: theme.textMuted }]}>For You</Text>
+          </TouchableOpacity>
+
         </View>
 
         {/* ── Banner ── */}
+        {/* ✅ Full offline empty state */}
+        {isOffline && loadingScreen && (
+          <View style={styles.offlineEmpty}>
+            <MaterialCommunityIcons name="wifi-off" size={60} color={theme.border} />
+            <Text style={[styles.offlineEmptyTitle, { color: theme.text }]}>
+              Internet nahi hai
+            </Text>
+            <Text style={[styles.offlineEmptySub, { color: theme.textMuted }]}>
+              Connect karo aur screen pull karo refresh karne ke liye
+            </Text>
+          </View>
+        )}
+
         {isSectionVisible('banner') && (
           loadingScreen ? <SkeletonBanner /> :
           banners.length > 0 ? (
@@ -363,11 +449,15 @@ const styles = StyleSheet.create({
   userName:     { fontSize: 26, fontWeight: '900', marginTop: 2 },
   greetIconBox: { width: 52, height: 52, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
 
-  // Stats
-  statsRow:     { flexDirection: 'row', marginHorizontal: 0, marginBottom: 2, paddingVertical: 10 },
-  statItem:     { flex: 1, alignItems: 'center', paddingVertical: 8, gap: 4 },
-  statVal:      { fontSize: 18, fontWeight: '900' },
+  // Stats Row
+  statsRow:     { flexDirection: 'row', alignItems: 'center', marginHorizontal: 16, marginTop: 12,
+                  borderRadius: 20, elevation: 2, shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8 },
+  statItem:     { flex: 1, alignItems: 'center', paddingVertical: 14, gap: 6 },
+  statIconBg:   { width: 40, height: 40, borderRadius: 13, justifyContent: 'center', alignItems: 'center' },
+  statVal:      { fontSize: 20, fontWeight: '900' },
   statLabel:    { fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.3 },
+  statDivider:  { width: 1, height: 44, borderRadius: 1 },
 
   // Banner
   bannerWrapper:{ marginTop: 14, marginHorizontal: 16 },
@@ -402,4 +492,15 @@ const styles = StyleSheet.create({
 
   // Common
   dot:          { position: 'absolute', right: 0, top: 0, width: 9, height: 9, borderRadius: 5, backgroundColor: '#EF4444', borderWidth: 2, borderColor: '#fff' },
+
+  // Bell badge
+  bellBadge:      { position: 'absolute', top: -5, right: -6, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: '#EF4444', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 4, borderWidth: 2, borderColor: '#fff' },
+  bellBadgeText:  { color: '#fff', fontSize: 9, fontWeight: '900' },
+
+  // Offline
+  offlineBanner:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#EF4444', paddingVertical: 9, paddingHorizontal: 16 },
+  offlineText:    { color: '#fff', fontSize: 12, fontWeight: '800' },
+  offlineEmpty:   { alignItems: 'center', paddingTop: 60, paddingHorizontal: 40 },
+  offlineEmptyTitle: { fontSize: 20, fontWeight: '900', marginTop: 16 },
+  offlineEmptySub:   { fontSize: 13, textAlign: 'center', marginTop: 8, lineHeight: 20 },
 });

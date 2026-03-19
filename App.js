@@ -141,8 +141,8 @@ function AppInner() {
 
     return () => {
       unsubscribe();
-      Notifications.removeNotificationSubscription(notificationListener.current);
-      Notifications.removeNotificationSubscription(responseListener.current);
+      notificationListener.current?.remove();
+      responseListener.current?.remove();
     };
   }, []);
 

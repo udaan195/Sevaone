@@ -5,7 +5,7 @@ import { auth, db } from '../../api/firebaseConfig';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { 
   doc, setDoc, collection, query, where, getDocs, 
-  updateDoc, increment, addDoc, serverTimestamp 
+  addDoc, serverTimestamp 
 } from 'firebase/firestore';
 
 export default function RegisterScreen({ navigation }) {
@@ -17,66 +17,9 @@ export default function RegisterScreen({ navigation }) {
   const [f, setF] = useState({ name: '', mob: '', email: '', state: '', city: '', pin: '', pass: '', cPass: '', ref: '' });
 
   // --- 🎫 REWARD LOGIC: Referral Verification & Payment ---
-  const processReferralReward = async (inputCode, newUserId) => {
-    if (!inputCode) return;
-    try {
-      // ✅ Fetch amounts from admin-controlled Firestore config
-      const configSnap = await getDocs(
-        query(collection(db, 'app_config'))
-      );
-      const referralDoc = await import('firebase/firestore').then(({ getDoc }) =>
-        getDoc(doc(db, 'app_config', 'referral'))
-      );
-      const referrerBonus = referralDoc.exists() ? (referralDoc.data().referrerBonus || 5)  : 5;
-      const joineeBonus   = referralDoc.exists() ? (referralDoc.data().joineeBonus   || 20) : 20;
-      const isActive      = referralDoc.exists() ? (referralDoc.data().isActive !== false)  : true;
-
-      if (!isActive) return; // Program paused
-
-      // 1. Referrer ko dhoondo
-      const q = query(collection(db, "users"), where("myReferralCode", "==", inputCode.toUpperCase()));
-      const snap = await getDocs(q);
-
-      if (!snap.empty) {
-        const referrerId   = snap.docs[0].id;
-        const referrerData = snap.docs[0].data();
-
-        // 2. Referrer ko bonus
-        await updateDoc(doc(db, "users", referrerId), {
-          walletBalance:       increment(referrerBonus),
-          totalReferralEarned: increment(referrerBonus),
-        });
-        await addDoc(collection(db, "transactions"), {
-          userId: referrerId, amount: referrerBonus, type: 'credit',
-          remark: 'Referral Bonus: Friend Joined', timestamp: serverTimestamp()
-        });
-
-        // 3. Naye user ko joining bonus
-        await updateDoc(doc(db, "users", newUserId), {
-          walletBalance: increment(joineeBonus),
-        });
-        await addDoc(collection(db, "transactions"), {
-          userId: newUserId, amount: joineeBonus, type: 'credit',
-          remark: 'Joining Bonus: Referral Used', timestamp: serverTimestamp()
-        });
-
-        // ✅ Tier bonus check
-        const tierThreshold = referralDoc.exists() ? (referralDoc.data().tierThreshold || 5) : 5;
-        const tierBonus     = referralDoc.exists() ? (referralDoc.data().tierBonus     || 25) : 25;
-        const totalReferrals = (referrerData.totalReferralEarned || 0) / referrerBonus + 1;
-        if (totalReferrals % tierThreshold === 0) {
-          await updateDoc(doc(db, "users", referrerId), {
-            walletBalance:       increment(tierBonus),
-            totalReferralEarned: increment(tierBonus),
-          });
-          await addDoc(collection(db, "transactions"), {
-            userId: referrerId, amount: tierBonus, type: 'credit',
-            remark: `Tier Bonus: ${totalReferrals} Referrals Complete!`, timestamp: serverTimestamp()
-          });
-        }
-      }
-    } catch { } // Silent fail — registration continue hoti hai
-  };
+  // ✅ SECURITY: Referral reward ab Cloud Function handle karta hai
+  // onNewUser trigger — automatic, server-side, tamper-proof
+  // Client se kuch karne ki zarurat nahi
 
   const handleRegister = async () => {
     // ✅ Rate limit check
@@ -134,7 +77,7 @@ export default function RegisterScreen({ navigation }) {
 
       // Step 3: Trigger Reward if Referral Code was entered
       if (f.ref) {
-        await processReferralReward(f.ref, uid);
+        // Referral handled server-side by Cloud Function
       }
 
       Alert.alert("Successfull!", "Registration Successful .");

@@ -16,7 +16,6 @@ Notifications.setNotificationHandler({
 export async function registerForPushNotificationsAsync() {
   // ✅ Real device check
   if (!Device.isDevice) {
-    // removed;
     return null;
   }
 
@@ -41,7 +40,6 @@ export async function registerForPushNotificationsAsync() {
     finalStatus = status;
   }
   if (finalStatus !== 'granted') {
-    // removed;
     return null;
   }
 
@@ -55,9 +53,7 @@ export async function registerForPushNotificationsAsync() {
   try {
     const result = await Notifications.getExpoPushTokenAsync({ projectId });
     token = result.data;
-    // removed;
   } catch (e) {
-    // removed;
     return null;
   }
 
@@ -73,9 +69,7 @@ export async function registerForPushNotificationsAsync() {
         },
         { merge: true }
       );
-      // removed;
     } catch (e) {
-      // removed;
     }
   }
 

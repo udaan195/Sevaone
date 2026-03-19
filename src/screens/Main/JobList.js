@@ -41,7 +41,6 @@ export default function JobList({ navigation, route }) {
       setFilteredJobs(data);
       setLoading(false);
     }, (error) => {
-      // removed;
       // Agar 'Index Required' error aaye, toh bina orderBy ke try karein
       const fallbackQuery = query(collection(db, "gov_jobs"), where("category", "==", category));
       onSnapshot(fallbackQuery, (snap) => {

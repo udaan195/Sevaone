@@ -9,10 +9,9 @@ import { doc, getDoc, updateDoc, setDoc } from 'firebase/firestore';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
-import Config from '../../config';
 
-const CLOUD_NAME    = Config.cloudinary.cloudName;
-const UPLOAD_PRESET = Config.cloudinary.uploadPreset;
+const CLOUD_NAME = "dxuurwexl";
+const UPLOAD_PRESET = "edusphere_uploads";
 
 // --- DropdownSelector & FloatingInput Components wahi hain ---
 const DropdownSelector = ({ label, options, selectedValue, onSelect, placeholder }) => {
@@ -122,18 +121,13 @@ export default function ApplyWizard({ route, navigation }) {
           }
           setUploadedDocs(preFilled);
         }
-      } catch (e) { console.error("Fetch error:", e); }
+      } catch (e) { }
     })();
   }, [jobId, userId]);
 
   useEffect(() => {
-    if (selCat && selPost && selGen && formConfig?.feeMapping) {
-      // ✅ Blank post/category = match all (as per form builder rule)
-      const match = formConfig.feeMapping.find(f =>
-        (!f.post     || f.post     === selPost) &&
-        (!f.category || f.category === selCat)  &&
-        (f.gender === selGen || f.gender === 'All' || !f.gender)
-      );
+    if(selCat && selPost && selGen && formConfig?.feeMapping) {
+      const match = formConfig.feeMapping.find(f => f.category === selCat && f.post === selPost && (f.gender === selGen || f.gender === 'All'));
       setOfficialFee(match ? match.amount : 0);
     }
   }, [selCat, selPost, selGen, formConfig]);
@@ -195,10 +189,7 @@ export default function ApplyWizard({ route, navigation }) {
 
   const isStep3Valid = () => {
     if (!formConfig?.documents) return true;
-    // ✅ Sirf required documents check karo
-    return formConfig.documents
-      .filter(d => d.required !== false)
-      .every(d => uploadedDocs[d.name]);
+    return formConfig.documents.every(d => uploadedDocs[d.name]);
   };
 const handleReviewNavigation = () => {
   // 1. Current Fee nikalein (State delay se bachne ke liye)
@@ -302,14 +293,10 @@ const handleReviewNavigation = () => {
                     color={uploadedDocs[d.name] ? "#10B981" : "#64748B"} 
                   />
                   <View style={{marginLeft: 12}}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <Text style={styles.prefText}>{d.name}</Text>
-                      {d.required === false && (
-                        <Text style={{ fontSize: 10, color: '#94A3B8', fontWeight: '700', backgroundColor: '#F1F5F9', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>Optional</Text>
-                      )}
-                    </View>
+                    <Text style={styles.prefText}>{d.name}</Text>
+                    {/* Status Text for auto-matched docs */}
                     {isFromProfile && (
-                      <Text style={{fontSize: 10, color: '#10B981', fontWeight: '800'}}>MATCHED FROM PROFILE ✅</Text>
+                      <Text style={{fontSize: 10, color: '#10B981', fontWeight: '800'}}>MATCHED FROM PROFILE</Text>
                     )}
                   </View>
                </View>
