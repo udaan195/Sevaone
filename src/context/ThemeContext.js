@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from "react";
+import React, { createContext, useContext, useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export const lightTheme = {
@@ -26,21 +26,41 @@ const ThemeContext = createContext(null);
 
 export function ThemeProvider({ children }) {
   const [isDark, setIsDark] = useState(false);
-  const [lang, setLang] = useState("en");
+  const [lang, setLang]     = useState('en');
+  const [loaded, setLoaded] = useState(false); // ✅ Prevent flash
+
+  // ✅ Load saved theme + lang on startup
+  useEffect(() => {
+    (async () => {
+      try {
+        const [savedTheme, savedLang] = await Promise.all([
+          AsyncStorage.getItem('appTheme'),
+          AsyncStorage.getItem('appLang'),
+        ]);
+        if (savedTheme === 'dark') setIsDark(true);
+        if (savedLang === 'hi')    setLang('hi');
+      } catch {}
+      setLoaded(true);
+    })();
+  }, []);
+
   const theme = isDark ? darkTheme : lightTheme;
-  const t = strings[lang];
+  const t     = strings[lang];
 
   const toggleTheme = async () => {
     const next = !isDark;
     setIsDark(next);
-    await AsyncStorage.setItem("appTheme", next ? "dark" : "light");
+    await AsyncStorage.setItem('appTheme', next ? 'dark' : 'light');
   };
 
   const toggleLang = async () => {
-    const next = lang === "en" ? "hi" : "en";
+    const next = lang === 'en' ? 'hi' : 'en';
     setLang(next);
-    await AsyncStorage.setItem("appLang", next);
+    await AsyncStorage.setItem('appLang', next);
   };
+
+  // ✅ Don't render until theme loaded — prevents white flash
+  if (!loaded) return null;
 
   return (
     <ThemeContext.Provider value={{ theme, isDark, toggleTheme, lang, toggleLang, t }}>

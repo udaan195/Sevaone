@@ -27,7 +27,7 @@ import * as ImagePicker from 'expo-image-picker';
 import Config from '../../config';
 
 // ── Config — baad mein update karo ─────────────────────────
-const WHATSAPP_GROUP = 'https://chat.whatsapp.com/DqOKJ1L5c5g2Qvg8oQZvDq?mode=gi_t'; // ← Group link yahan
+const WHATSAPP_GROUP = 'https://wa.me/7518640453?text=Hello%20SewaOne%20Support'; // ← Group link yahan
 const CALL_NUMBER    = '+917518640453'; // ← Real number yahan
 const CLOUD_NAME     = Config.cloudinary.cloudName;
 const UPLOAD_PRESET  = Config.cloudinary.uploadPreset;

@@ -72,7 +72,7 @@ export default function RegisterScreen({ navigation }) {
         myReferralCode: myNewCode,      // Iska apna naya code
         role: 'user',
         walletBalance: 0, // Shuruat mein zero, reward baad mein judega
-        createdAt: new Date().toISOString()
+        createdAt: serverTimestamp()
       });
 
       // Step 3: Trigger Reward if Referral Code was entered

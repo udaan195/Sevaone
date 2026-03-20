@@ -7,7 +7,7 @@ import {
 import { db, auth } from '../../api/firebaseConfig';
 import {
   doc, getDoc, collection, addDoc,
-  increment, serverTimestamp, updateDoc, query, where, getDocs
+  increment, serverTimestamp, updateDoc, query, where, getDocs, runTransaction
 } from 'firebase/firestore';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -101,7 +101,19 @@ export default function ServiceReview({ route, navigation }) {
       if (calc > serviceFee) calc = serviceFee;
       if (calc <= 0) return Alert.alert('Error', 'Discount calculate nahi ho saka.');
 
-      await updateDoc(vRef, { usedCount: increment(1) });
+      // ✅ Atomic transaction — race condition fix
+      await runTransaction(db, async (tx) => {
+        const freshSnap = await tx.get(vRef);
+        if (!freshSnap.exists()) throw new Error('Voucher not found');
+        const fresh      = freshSnap.data();
+        const freshCount = fresh.usedCount  || 0;
+        const freshLimit = fresh.usageLimit || 999;
+        if (!fresh.isActive)          throw new Error('Voucher inactive');
+        if (freshCount >= freshLimit) throw new Error('Limit reached');
+        if (fresh.expiryDate && new Date(fresh.expiryDate) < new Date())
+                                      throw new Error('Expired');
+        tx.update(vRef, { usedCount: increment(1) });
+      });
 
       setDiscount(calc);
       setFinalTotal(initialTotal - calc);

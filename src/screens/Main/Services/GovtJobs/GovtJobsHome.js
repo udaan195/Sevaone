@@ -15,8 +15,20 @@ export default function GovtJobsHome({ navigation }) {
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>Government Services</Text>
-          <Text style={styles.headerSub}>Select a category to view listings</Text>
+          <View style={styles.headerRow}>
+            <View>
+              <Text style={styles.headerTitle}>Government Services</Text>
+              <Text style={styles.headerSub}>Select a category to view listings</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.calBtn}
+              onPress={() => navigation.navigate('JobCalendar')}
+              activeOpacity={0.85}
+            >
+              <MaterialCommunityIcons name="calendar-month" size={22} color="#002855" />
+              <Text style={styles.calBtnText}>Deadlines</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.grid}>
@@ -49,7 +61,10 @@ export default function GovtJobsHome({ navigation }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F8FAFC' },
   scrollContainer: { padding: 20, paddingBottom: 100 },
-  header: { marginBottom: 25 },
+  header:      { marginBottom: 25 },
+  headerRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  calBtn:      { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#EBF5FB', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14, borderWidth: 1.5, borderColor: '#BFD7ED' },
+  calBtnText:  { fontSize: 12, fontWeight: '800', color: '#002855' },
   headerTitle: { fontSize: 24, fontWeight: 'bold', color: '#1E293B' },
   headerSub: { fontSize: 14, color: '#64748B', marginTop: 5 },
   grid: { gap: 15 },

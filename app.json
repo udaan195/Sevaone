@@ -29,8 +29,7 @@
         "android.permission.NOTIFICATIONS",
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "web": {
@@ -55,8 +54,8 @@
       "cloudinaryCloudName": "dxuurwexl",
       "cloudinaryUploadPreset": "edusphere_uploads",
       "telegramBotToken": "7178445265:AAFRMgEnC_t10ivkjhlEu9VCvT7JoJy-oB0",
-        "walletUpiId": "7518640453-2@axl",
-        "walletUpiName": "SewaOne",
+      "walletUpiId": "7518640453-2@axl",
+      "walletUpiName": "SewaOne",
       "telegramChatId": "7882393836"
     },
     "owner": "udaan195"

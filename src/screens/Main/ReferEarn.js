@@ -332,4 +332,17 @@ const s = StyleSheet.create({
   emptyText:    { fontSize: 12, color: '#CBD5E1', marginTop: 6 },
   emptyShareBtn:{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#25D366', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 20, marginTop: 18 },
   emptyShareText:{ color: '#fff', fontWeight: '800', fontSize: 13 },
+
+  // Coupon share card
+  couponCard:    { marginHorizontal: 16, marginTop: 14, borderRadius: 22, padding: 20, elevation: 4 },
+  couponTop:     { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 6 },
+  couponTitle:   { color: '#FFD700', fontSize: 16, fontWeight: '900' },
+  couponSub:     { color: 'rgba(255,255,255,0.65)', fontSize: 12, fontWeight: '600', marginBottom: 14 },
+  msgPreview:    { backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 14, padding: 14, marginBottom: 14 },
+  msgText:       { color: '#fff', fontSize: 12, lineHeight: 20, fontWeight: '600' },
+  couponBtns:    { flexDirection: 'row', gap: 10 },
+  couponWhatsApp:{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: '#25D366', padding: 13, borderRadius: 13 },
+  couponCopy:    { flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: '#FFD700', paddingHorizontal: 16, padding: 13, borderRadius: 13 },
+  couponBtnText: { color: '#fff', fontWeight: '900', fontSize: 13 },
+  couponCopyText:{ color: '#002855', fontWeight: '900', fontSize: 13 },
 });

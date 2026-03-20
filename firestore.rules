@@ -1,0 +1,293 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // -- Helpers ----------------------------------------------
+    function isLoggedIn()  { return request.auth != null; }
+    function uid()         { return request.auth.uid; }
+    function isOwner(id)   { return uid() == id; }
+
+    function isAdmin() {
+      return isLoggedIn() &&
+        exists(/databases/$(database)/documents/users/$(uid())) &&
+        get(/databases/$(database)/documents/users/$(uid())).data.role == 'admin';
+    }
+
+    function isAgent() {
+      return isLoggedIn() &&
+        exists(/databases/$(database)/documents/agents/$(uid()));
+    }
+
+    // Admin panel auth check — agents collection se bhi check karo
+    function isAdminViaAnyCollection() {
+      return isAdmin() || (
+        isLoggedIn() &&
+        exists(/databases/$(database)/documents/agents/$(uid()))
+      );
+    }
+
+    function isAdminOrAgent() {
+      return isAdmin() || isAgent();
+    }
+
+    // ========================================================
+    // USERS
+    // ========================================================
+    match /users/{userId} {
+      // Read: apna data + admin/agent
+      allow read: if isOwner(userId) || isAdminOrAgent();
+
+      // Create: sirf apna account (register ke time)
+      allow create: if isLoggedIn() && isOwner(userId);
+
+      // Update: apna data ya admin
+      allow update: if isOwner(userId) || isAdmin();
+
+      // Delete: sirf admin
+      allow delete: if isAdmin();
+    }
+
+    // ========================================================
+    // AGENTS
+    // ========================================================
+    match /agents/{agentId} {
+      allow read:   if isAdminOrAgent();
+      allow write:  if isAdmin();
+    }
+
+    match /agent_permissions/{agentId} {
+      allow read:   if isAdminOrAgent();
+      allow write:  if isAdmin();
+    }
+
+    // ========================================================
+    // GOVERNMENT JOBS
+    // ========================================================
+    match /gov_jobs/{jobId} {
+      // Anyone can read (logged in or not   public data)
+      allow read:   if true;
+      // Only admin can write
+      allow write:  if isAdmin();
+    }
+
+    // ========================================================
+    // ALL SERVICES
+    // ========================================================
+    match /all_services/{serviceId} {
+      allow read:   if true;
+      allow write:  if isAdmin();
+    }
+
+    // ========================================================
+    // JOB APPLICATIONS
+    // ========================================================
+    match /applications/{appId} {
+      // User apni application padh sake
+      allow read: if isLoggedIn() && (
+        resource.data.userId == uid() || isAdminOrAgent()
+      );
+
+      // User apni application create kare
+      allow create: if isLoggedIn() && request.resource.data.userId == uid();
+
+      // Admin ya assigned agent update kare
+      allow update: if isAdmin() ||
+        (isAgent() && resource.data.assignedTo == uid());
+
+      allow delete: if isAdmin();
+
+      // Chat messages subcollection
+      match /messages/{msgId} {
+        allow read:  if isLoggedIn() && (
+          get(/databases/$(database)/documents/applications/$(appId)).data.userId == uid() ||
+          isAdminOrAgent()
+        );
+        allow create: if isLoggedIn();
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // ========================================================
+    // SERVICE APPLICATIONS
+    // ========================================================
+    match /service_applications/{appId} {
+      allow read: if isLoggedIn() && (
+        resource.data.userId == uid() || isAdminOrAgent()
+      );
+      allow create: if isLoggedIn() && request.resource.data.userId == uid();
+      allow update: if isAdmin() ||
+        (isAgent() && resource.data.assignedTo == uid());
+      allow delete: if isAdmin();
+
+      match /messages/{msgId} {
+        allow read:  if isLoggedIn() && (
+          get(/databases/$(database)/documents/service_applications/$(appId)).data.userId == uid() ||
+          isAdminOrAgent()
+        );
+        allow create: if isLoggedIn();
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // ========================================================
+    // WALLET REQUESTS
+    // ========================================================
+    match /wallet_requests/{reqId} {
+      // User apni request dekhe
+      allow read: if isLoggedIn() && (
+        resource.data.userId == uid() || isAdmin()
+      );
+      // User request create kare
+      allow create: if isLoggedIn() && request.resource.data.userId == uid();
+      // Sirf admin approve/reject kare
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ========================================================
+    // TRANSACTIONS
+    // ========================================================
+    match /transactions/{txId} {
+      allow read: if isLoggedIn() && (
+        resource.data.userId == uid() || isAdmin()
+      );
+      // App internally create karta hai   apni transaction
+      allow create: if isLoggedIn() && request.resource.data.userId == uid();
+      // Update sirf admin (corrections)
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ========================================================
+    // NOTIFICATIONS (Bell icon)
+    // ========================================================
+    match /notifications/{notiId} {
+      // Har logged-in user read kare (global notifications)
+      allow read:   if isLoggedIn();
+      // Sirf admin create kare
+      allow create: if isAdmin();
+      allow update: if isLoggedIn() && (
+        // User sirf readBy ya isRead field update kare
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['readBy', 'isRead', 'readAt']) || isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    // User-specific notifications subcollection
+    match /users/{userId}/notifications/{notiId} {
+      allow read:   if isOwner(userId) || isAdmin();
+      allow create: if isAdmin() || isAgent();
+      allow update: if isOwner(userId) || isAdmin();
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    // ========================================================
+    // VOUCHERS / COUPONS
+    // ========================================================
+    match /vouchers/{voucherId} {
+      // Logged-in users read kare (apply karne ke liye check)
+      allow read:   if isLoggedIn();
+      allow write:  if isAdmin();
+    }
+
+    match /voucher_usage_requests/{reqId} {
+      allow read:   if isLoggedIn() && (
+        resource.data.userId == uid() || isAdmin()
+      );
+      allow create: if isLoggedIn() && request.resource.data.userId == uid();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ========================================================
+    // BANNERS (Home screen slider)
+    // ========================================================
+    match /banners/{bannerId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+
+    // ========================================================
+    // UPDATES / TICKER
+    // ========================================================
+    match /updates/{updateId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+
+    // ========================================================
+    // FAQs & HELP
+    // ========================================================
+    match /faqs/{faqId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+
+    match /help_articles/{articleId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+
+    // ========================================================
+    // GRIEVANCES
+    // ========================================================
+    match /grievances/{gId} {
+      allow read: if isLoggedIn() && (
+        resource.data.userId == uid() || isAdmin()
+      );
+      allow create: if isLoggedIn() && request.resource.data.userId == uid();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ========================================================
+    // MASTER DATA (Eligibility questions etc.)
+    // ========================================================
+    match /master_eligibility/{docId} {
+      allow read:  if isLoggedIn();
+      allow write: if isAdmin();
+    }
+
+    match /master_documents/{docId} {
+      allow read:  if isLoggedIn();
+      allow write: if isAdmin();
+    }
+
+    // ========================================================
+    // APP CONFIG (Maintenance, Features, Referral)
+    // ========================================================
+    match /app_config/{configId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+
+    // ========================================================
+    // ANALYTICS EVENTS
+    // ========================================================
+    match /analytics_events/{eventId} {
+      // User apna event log kare
+      allow create: if isLoggedIn() && request.resource.data.userId == uid();
+      // Sirf admin padhe
+      allow read:   if isAdmin();
+      allow update, delete: if false;
+    }
+
+    // ========================================================
+    // ADMIN LOGS (token cleanup etc.)
+    // ========================================================
+    match /admin_logs/{logId} {
+      allow read:   if isAdmin();
+      allow write:  if false; // Cloud Functions likhte hain
+    }
+
+    // ========================================================
+    // NOTIFICATION LOGS
+    // ========================================================
+    match /notification_logs/{logId} {
+      allow read:   if isAdmin();
+      allow write:  if isAdmin();
+    }
+
+  }
+}

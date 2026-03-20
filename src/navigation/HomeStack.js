@@ -7,6 +7,7 @@ import JobList from '../screens/Main/JobList'; // Nayi Dynamic List File
 import JobDetails from '../screens/Main/JobDetails'; // Nayi Details File
 import NotificationsScreen from '../screens/Main/NotificationsScreen';
 // --- TOP LEVEL SERVICE HOMES ---
+import JobCalendar from '../screens/Main/JobCalendar';
 import GovtJobsHome from '../screens/Main/Services/GovtJobs/GovtJobsHome';
 import ApplyWizard from '../screens/Main/ApplyWizard';
 import ApplicationReview from '../screens/Main/ApplicationReview';
@@ -39,6 +40,7 @@ export default function HomeStack() {
       <Stack.Screen name="HomeRoot" component={HomeScreen} options={{ headerShown: false }} />
 
       {/* 2. Top Level Services */}
+      <Stack.Screen name="JobCalendar" component={JobCalendar} options={{ headerShown: false }} />
       <Stack.Screen name="GovtJobs" component={GovtJobsHome} options={{ title: 'Government Jobs' }} />
       
       

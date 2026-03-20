@@ -284,7 +284,7 @@ export default function ProfileScreen({ navigation }) {
           <MenuOption icon="shield-lock"  iconColor="#8B5CF6" title={t.privacyPolicy   || 'Privacy Policy'}  theme={theme}
             onPress={() => navigation.navigate('PrivacyPolicy')} />
           <MenuOption icon="help-circle"  iconColor="#10B981" title="Help & Support" theme={theme}
-            onPress={() => navigation.navigate('HelpScreen')} />
+            onPress={() => navigation.navigate('Help')} />
 
           {/* Dark Mode */}
           <View style={[s.optionRow, { backgroundColor: theme.card }]}>

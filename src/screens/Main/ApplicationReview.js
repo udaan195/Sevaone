@@ -6,7 +6,7 @@ import {
 import { db, auth } from '../../api/firebaseConfig';
 import { 
   doc, getDoc, collection, addDoc, 
-  increment, serverTimestamp, updateDoc, query, where, getDocs 
+  increment, serverTimestamp, updateDoc, query, where, getDocs, runTransaction 
 } from 'firebase/firestore';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -152,9 +152,18 @@ export default function ApplicationReview({ route, navigation }) {
         return Alert.alert("Error", "Discount calculate nahi ho saka.");
       }
 
-      // ✅ 6. Increment usedCount in Firestore
-      await updateDoc(voucherRef, {
-        usedCount: increment(1)
+      // ✅ 6. Atomic transaction — race condition fix
+      await runTransaction(db, async (tx) => {
+        const freshSnap = await tx.get(voucherRef);
+        if (!freshSnap.exists()) throw new Error('Voucher not found');
+        const freshData  = freshSnap.data();
+        const freshCount = freshData.usedCount  || 0;
+        const freshLimit = freshData.usageLimit || 999;
+        if (!freshData.isActive)           throw new Error('Voucher inactive');
+        if (freshCount >= freshLimit)      throw new Error('Limit reached');
+        if (freshData.expiryDate && new Date(freshData.expiryDate) < new Date())
+                                           throw new Error('Expired');
+        tx.update(voucherRef, { usedCount: increment(1) });
       });
 
       setDiscount(calculatedDiscount);

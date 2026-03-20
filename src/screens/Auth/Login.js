@@ -99,6 +99,7 @@ export default function LoginScreen({ navigation }) {
 
   return (
     <ScrollView contentContainerStyle={[styles.container, {backgroundColor: colors.background}]}>
+
       <View style={styles.headerSection}>
         <MaterialCommunityIcons name="shield-account" size={75} color={colors.primary} />
         <Text style={[styles.logoText, {color: colors.primary}]}>SewaOne</Text>
@@ -185,7 +186,7 @@ const styles = StyleSheet.create({
   loginBtn: { borderRadius: 10, marginTop: 10, paddingVertical: 5 },
   btnLabel: { fontSize: 16, fontWeight: 'bold' },
   footerLinks: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 25 },
-  trustFooter: { marginTop: 50, alignItems: 'center' },
+  trustFooter:  { marginTop: 50, alignItems: 'center' },
   trustText: { color: '#2e7d32', fontSize: 13, fontWeight: 'bold' },
   subTrustText: { color: '#999', fontSize: 10, marginTop: 4 }
 });

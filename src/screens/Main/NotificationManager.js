@@ -40,6 +40,7 @@ export async function registerForPushNotificationsAsync() {
     finalStatus = status;
   }
   if (finalStatus !== 'granted') {
+    // User ne permission deny kiya — token nahi milega
     return null;
   }
 
@@ -53,7 +54,9 @@ export async function registerForPushNotificationsAsync() {
   try {
     const result = await Notifications.getExpoPushTokenAsync({ projectId });
     token = result.data;
+    if (!token) return null;  // Token empty — return early
   } catch (e) {
+    // Emulator ya dev build mein fail hota hai — acceptable
     return null;
   }
 
@@ -70,8 +73,18 @@ export async function registerForPushNotificationsAsync() {
         { merge: true }
       );
     } catch (e) {
+      // Firestore save fail — token milega lekin Firestore mein nahi gaya
     }
   }
 
   return token;
+}
+
+// ── Helper: Invalid token Firestore se hatao ─────────────
+export async function clearInvalidToken(uid) {
+  if (!uid) return;
+  try {
+    const { doc: fDoc, updateDoc } = require('firebase/firestore');
+    await updateDoc(fDoc(db, 'users', uid), { pushToken: null });
+  } catch {}
 }
