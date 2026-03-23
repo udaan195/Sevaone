@@ -10,15 +10,17 @@ import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 import MaintenanceScreen from './src/screens/Main/MaintenanceScreen';
 import { Provider as PaperProvider } from 'react-native-paper';
 import * as Notifications from 'expo-notifications';
-import { registerForPushNotificationsAsync } from './src/screens/Main/NotificationManager';
+import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { ThemeProvider, useAppTheme } from './src/context/ThemeContext';
+import { checkMembershipExpiry, setupNotificationHandler, requestNotificationPermission } from './src/utils/membershipNotification';
 
 import AuthStack from './src/navigation/AuthStack';
 import OfflineBanner from './src/components/OfflineBanner';
 import MainTabNavigator from './src/navigation/MainTabNavigator';
 
 const Stack = createStackNavigator();
+
 
 // ✅ Global navigationRef — kahi se bhi navigate kar sako
 export const navigationRef = createNavigationContainerRef();
@@ -110,13 +112,22 @@ function AppInner() {
         } catch (e) {
           console.log('Token save error:', e);
         }
+
+        // ✅ FEAT-01: Membership expiry check on every login/app open
+        try {
+          await requestNotificationPermission();
+          await checkMembershipExpiry(u.uid);
+        } catch (e) {
+          console.log('Expiry check error:', e.message);
+        }
       }
     });
 
     // 2. Foreground notification
     notificationListener.current = Notifications.addNotificationReceivedListener(
       (notification) => {
-        // Foreground mein notification aayi — kuch karna ho toh yahan
+        // Foreground mein notification — banner show hoga setNotificationHandler ki wajah se ✅
+        console.log('Notification received (foreground):', notification.request.content.title);
       }
     );
 
@@ -196,3 +207,48 @@ export default function App() {
   );
 }
 
+// ── Push Token Register ───────────────────────────────────
+async function registerForPushNotificationsAsync() {
+  if (!Device.isDevice) return null;
+
+  // ✅ Android channel — APK ke liye zaroori
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('sewaone_alerts', {
+      name: 'SewaOne Alerts',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#003366',
+      sound: true,
+      showBadge: true,
+    });
+  }
+
+  const { status: existing } = await Notifications.getPermissionsAsync();
+  let finalStatus = existing;
+  if (existing !== 'granted') {
+    const { status } = await Notifications.requestPermissionsAsync();
+    finalStatus = status;
+  }
+  if (finalStatus !== 'granted') {
+    Alert.alert(
+      'Notification Permission',
+      'Notifications allow karo — job alerts aur updates milenge!',
+      [{ text: 'OK' }]
+    );
+    return null;
+  }
+
+  // ✅ projectId REQUIRED for APK builds
+  const projectId =
+    Constants?.expoConfig?.extra?.eas?.projectId ||
+    Constants?.easConfig?.projectId ||
+    '3429dc9b-58d9-4160-977f-ee6009930a66';
+
+  try {
+    const result = await Notifications.getExpoPushTokenAsync({ projectId });
+    return result.data;
+  } catch (e) {
+    console.log('Token error:', e.message);
+    return null;
+  }
+}

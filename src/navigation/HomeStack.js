@@ -23,6 +23,8 @@ import ServiceWizard from '../screens/Main/ServiceWizard';
 import ServiceReview from '../screens/Main/ServiceReview';
 import NotificationManager from '../screens/Main/NotificationManager';
 import PrivateJobs from '../screens/Main/PrivateJobs';
+import MembershipScreen        from '../screens/Main/MembershipScreen';
+import MembershipHistoryScreen  from '../screens/Main/MembershipHistoryScreen';
 
 const Stack = createStackNavigator();
 
@@ -41,6 +43,9 @@ export default function HomeStack() {
 
       {/* 2. Top Level Services */}
       <Stack.Screen name="JobCalendar" component={JobCalendar} options={{ headerShown: false }} />
+      <Stack.Screen name="Membership"        component={MembershipScreen}
+        options={{ headerShown:false }} />
+      <Stack.Screen name="MembershipHistory" component={MembershipHistoryScreen} options={{ headerShown: false }} />
       <Stack.Screen name="GovtJobs" component={GovtJobsHome} options={{ title: 'Government Jobs' }} />
       
       

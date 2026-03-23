@@ -172,8 +172,10 @@ export default function ServiceWizard({ route, navigation }) {
 
     navigation.navigate('ServiceReview', {
       serviceId,
-      serviceTitle: serviceData?.title || config.title,
-      formData: readableData,
+      serviceTitle:  serviceData?.title || config.title,
+      formData:      readableData,
+      serviceType:   serviceData?.menuType || serviceData?.serviceType || 'citizen_services',
+      category:      serviceData?.category || serviceData?.subCategory || '',
       feeDetails: {
         govFee:     route.params?.selectedGovFee || config.simpleGovFee || 0,
         serviceFee: config.serviceFee || 50,

@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import { consumeFreeApp, incrementMonthlyUsage } from '../../utils/membershipManager';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Modal, TextInput, Alert, ActivityIndicator, SafeAreaView,
@@ -7,7 +9,7 @@ import {
 import { db, auth } from '../../api/firebaseConfig';
 import {
   doc, getDoc, collection, addDoc,
-  increment, serverTimestamp, updateDoc, query, where, getDocs, runTransaction
+  increment, serverTimestamp, updateDoc, query, where, getDocs
 } from 'firebase/firestore';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -16,7 +18,7 @@ import Constants from 'expo-constants';
 import Config from '../../config';
 
 export default function ServiceReview({ route, navigation }) {
-  const { formData, feeDetails, serviceId, serviceTitle, documents } = route.params || {};
+  const { formData, feeDetails, serviceId, serviceTitle, documents, serviceType = 'citizen_services', category = '' } = route.params || {};
 
   const govFee     = Number(feeDetails?.govFee     || 0);
   const serviceFee = Number(feeDetails?.serviceFee || 0);
@@ -24,6 +26,11 @@ export default function ServiceReview({ route, navigation }) {
 
   const [couponCode, setCouponCode]       = useState('');
   const [discount, setDiscount]           = useState(0);
+  const [membershipDiscount, setMembershipDiscount] = useState(0);
+  const [membershipInfo, setMembershipInfo] = useState(null);
+  const [isMembershipFree, setIsMembershipFree]     = useState(false);
+  const [appLimitReached, setAppLimitReached]       = useState(false);
+  const [appLimitInfo, setAppLimitInfo]             = useState(null);
   const [isCouponApplied, setIsCouponApplied] = useState(false);
   const [couponLoading, setCouponLoading] = useState(false);
   const [finalTotal, setFinalTotal]       = useState(initialTotal);
@@ -44,9 +51,134 @@ export default function ServiceReview({ route, navigation }) {
   const CLOUDINARY_URL = `https://api.cloudinary.com/v1_1/${Config.cloudinary.cloudName}/image/upload`;
   const UPLOAD_PRESET  = Config.cloudinary.uploadPreset;
 
+  // ── Membership discount — fresh on every focus ──────────────
+  useFocusEffect(
+    useCallback(() => {
+      if (!userId || !serviceFee) return;
+      setMembershipDiscount(0);
+      setMembershipInfo(null);
+      setIsMembershipFree(false);
+      setAppLimitReached(false);
+      setAppLimitInfo(null);
+      setFinalTotal(govFee + serviceFee);
+
+      const fetchMembership = async () => {
+        try {
+          const { getDoc, doc } = await import('firebase/firestore');
+          const { db } = await import('../../api/firebaseConfig');
+
+          const [memSnap, cfgSnap] = await Promise.all([
+            getDoc(doc(db, 'user_memberships', userId)),
+            getDoc(doc(db, 'app_config', 'membership_master')),
+          ]);
+
+          if (!memSnap.exists()) { console.log('🔴 SR-EXIT: No membership doc'); return; }
+          const mem = memSnap.data();
+          if (!mem.isActive) { console.log('🔴 SR-EXIT: Membership not active'); return; }
+
+          // ✅ LIMIT CHECK — free apps bypass limit
+          const rawLimitSR  = mem.lockedBenefits?.appLimit;
+          const appLimitSR  = rawLimitSR != null ? Number(rawLimitSR) : -1;
+          const freeAppsLB  = mem.lockedBenefits?.freeApps != null ? Number(mem.lockedBenefits.freeApps) : 0;
+          const mkNow = `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}`;
+          const usSnap2 = await getDoc(doc(db, 'user_memberships', userId, 'monthly_usage', mkNow));
+          const usedNow     = usSnap2.exists() ? (usSnap2.data().apps_used  || 0) : 0;
+          const freeUsedNow = usSnap2.exists() ? (usSnap2.data().free_used || 0) : 0;
+          const freeLeftNow = Math.max(0, freeAppsLB - freeUsedNow);
+
+          if (appLimitSR > 0) {
+            if (usedNow >= appLimitSR) {
+              if (freeLeftNow > 0) {
+                // Free apps available — bypass limit block
+              } else {
+                setAppLimitReached(true);
+                setAppLimitInfo({ used: usedNow, limit: appLimitSR, remaining: 0 });
+                return;
+              }
+            } else {
+              setAppLimitInfo({ used: usedNow, limit: appLimitSR, remaining: appLimitSR - usedNow });
+            }
+          }
+
+          const isTrial   = mem.isTrial === true;
+          const cfg       = cfgSnap.exists() ? cfgSnap.data() : {};
+          const isEnabled = cfg.isEnabled ?? false;
+          const planKey   = mem.plan || 'basic';
+          const lb        = mem.lockedBenefits;
+
+          if (!isEnabled && isTrial) { console.log('🔴 SR-EXIT: Toggle OFF + trial'); return; }
+          if (!isEnabled && !isTrial && !lb) { console.log('🔴 SR-EXIT: Toggle OFF + no lockedBenefits'); return; }
+
+          // Use lockedBenefits for paid, live config for trial
+          let discountPct, freeApps, coverage;
+          if (!isTrial && lb) {
+            discountPct = lb.discount  ?? 0;
+            freeApps    = lb.freeApps  != null ? Number(lb.freeApps)  : 0;
+            coverage    = lb.coverage  || {};
+          } else {
+            const plan  = (cfg.plans?.[planKey]) || { discount:10, freeApps:0 };
+            discountPct = plan.discount  || 0;
+            freeApps    = plan.freeApps  != null ? Number(plan.freeApps) : 0;
+            coverage    = (cfg.coverage?.[planKey]) || {};
+          }
+
+          const planName  = lb?.planName  || planKey;
+          const planEmoji = lb?.planEmoji || '⭐';
+
+          // Coverage check — fallback to DEFAULT if empty
+          const DEFAULT_COV_SR = {
+            basic:  { gov_jobs:{enabled:true}, citizen_services:{enabled:true}, govt_schemes:{enabled:false}, students:{enabled:true}, others:{enabled:false} },
+            silver: { gov_jobs:{enabled:true}, citizen_services:{enabled:true}, govt_schemes:{enabled:true},  students:{enabled:true}, others:{enabled:true}  },
+            gold:   { gov_jobs:{enabled:true}, citizen_services:{enabled:true}, govt_schemes:{enabled:true},  students:{enabled:true}, others:{enabled:true}  },
+          };
+          const effectiveCoverage = (Object.keys(coverage).length > 0) ? coverage : (DEFAULT_COV_SR[mem.plan] || {});
+          const svcCov = effectiveCoverage[serviceType];
+          if (svcCov && svcCov.enabled === false) { console.log('🔴 SR-EXIT: serviceType coverage OFF'); return; }
+          if (category && svcCov?.categories && svcCov.categories[category] === false) { console.log('🔴 SR-EXIT: category coverage OFF'); return; }
+
+          // Monthly usage
+          const now      = new Date();
+          const mk       = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+          const usSnap   = await getDoc(doc(db, 'user_memberships', userId, 'monthly_usage', mk));
+          const usage    = usSnap.exists() ? usSnap.data() : {};
+          const freeUsed = Number(usage.free_used || 0);
+          const appsUsed = Number(usage.apps_used || 0);
+
+          // Step 1: Free apps
+          if (freeApps > 0) {
+            const freeLeft = Math.max(0, freeApps - freeUsed);
+            if (freeLeft > 0) {
+              setMembershipDiscount(serviceFee);
+              setMembershipInfo({ discount:serviceFee, isFree:true, freeAppsLeft:freeLeft, discountPct:100, planName, planEmoji });
+              setIsMembershipFree(true);
+              setFinalTotal(govFee);
+              return;
+            }
+          }
+
+          // Step 2: App limit already checked above (appLimitSR)
+
+          // Step 3: Discount
+          if (discountPct <= 0) { console.log('🔴 SR-EXIT: discountPct is 0'); return; }
+          const disc = Math.floor(serviceFee * discountPct / 100);
+          if (disc > 0) {
+            setMembershipDiscount(disc);
+            setMembershipInfo({ discount:disc, isFree:false, freeAppsLeft:0, discountPct, planName, planEmoji });
+            setIsMembershipFree(false);
+            setFinalTotal(govFee + serviceFee - disc);
+          }
+        } catch (e) {
+        }
+      };
+
+      fetchMembership();
+    }, [userId, govFee, serviceFee])
+  );
+
   useEffect(() => {
     if (userId) fetchWalletInfo();
-    setFinalTotal(initialTotal);
+    // ✅ FIX: setFinalTotal yahan nahi — useFocusEffect se set hoti hai
+    // Pehle initialTotal set hai useState mein — kaafi hai
   }, [userId]);
 
   const fetchWalletInfo = async () => {
@@ -101,19 +233,7 @@ export default function ServiceReview({ route, navigation }) {
       if (calc > serviceFee) calc = serviceFee;
       if (calc <= 0) return Alert.alert('Error', 'Discount calculate nahi ho saka.');
 
-      // ✅ Atomic transaction — race condition fix
-      await runTransaction(db, async (tx) => {
-        const freshSnap = await tx.get(vRef);
-        if (!freshSnap.exists()) throw new Error('Voucher not found');
-        const fresh      = freshSnap.data();
-        const freshCount = fresh.usedCount  || 0;
-        const freshLimit = fresh.usageLimit || 999;
-        if (!fresh.isActive)          throw new Error('Voucher inactive');
-        if (freshCount >= freshLimit) throw new Error('Limit reached');
-        if (fresh.expiryDate && new Date(fresh.expiryDate) < new Date())
-                                      throw new Error('Expired');
-        tx.update(vRef, { usedCount: increment(1) });
-      });
+      await updateDoc(vRef, { usedCount: increment(1) });
 
       setDiscount(calc);
       setFinalTotal(initialTotal - calc);
@@ -151,8 +271,12 @@ export default function ServiceReview({ route, navigation }) {
         userId, amount: finalTotal, type: 'debit',
         remark: `Paid for ${serviceTitle}`, status: 'success', timestamp: serverTimestamp()
       });
-      setIsPaid(true);
-      setSelectedMethod('wallet');
+            setIsPaid(true);
+      if (membershipInfo && userId) {
+        // BUG-02 Fix: Use imported functions (not require)
+        if (isMembershipFree) consumeFreeApp(userId).catch(() => {});
+        else incrementMonthlyUsage(userId).catch(() => {});
+      } setSelectedMethod('wallet');
       setPaymentModal(false);
       setPinModal(false);
     } catch { Alert.alert('Error', 'Transaction failed. Try again.'); }
@@ -226,6 +350,11 @@ export default function ServiceReview({ route, navigation }) {
   const handleUPIFinish = () => {
     if (!screenshot) return Alert.alert('Required', 'Payment screenshot upload karo!');
     setIsPaid(true); setSelectedMethod('upi'); setUpiModal(false);
+    // BUG-01 Fix: Track usage on UPI payment too
+    if (membershipInfo && userId) {
+      if (isMembershipFree) consumeFreeApp(userId).catch(() => {});
+      else incrementMonthlyUsage(userId).catch(() => {});
+    }
   };
 
   // ── RENDER ────────────────────────────────────────────────
@@ -268,6 +397,19 @@ export default function ServiceReview({ route, navigation }) {
             <Text style={s.feeLabel}>Portal Service Fee</Text>
             <Text style={s.feeVal}>₹{serviceFee}</Text>
           </View>
+          {membershipDiscount > 0 && (
+            <View style={s.feeRow}>
+              <View style={{ flexDirection:'row', alignItems:'center', gap:6, flex:1 }}>
+                <Text style={[s.feeLabel, { color:'#10B981' }]}>
+                  {membershipInfo?.planEmoji} {membershipInfo?.planName}
+                  {isMembershipFree ? ' — FREE App' : ` — ${membershipInfo?.discountPct}% off`}
+                </Text>
+              </View>
+              <Text style={[s.feeVal, { color:'#10B981', fontWeight:'900' }]}>
+                -₹{membershipDiscount}
+              </Text>
+            </View>
+          )}
           <View style={s.feeRow}>
             <Text style={s.feeLabel}>Government Fee</Text>
             <Text style={s.feeVal}>₹{govFee}</Text>

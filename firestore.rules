@@ -13,17 +13,18 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(uid())).data.role == 'admin';
     }
 
+    function isAdminByEmail() {
+      return isLoggedIn() && (
+        request.auth.token.email == 'admin@sewaone.in' ||
+        request.auth.token.email_verified == true &&
+        exists(/databases/$(database)/documents/users/$(uid())) &&
+        get(/databases/$(database)/documents/users/$(uid())).data.role == 'admin'
+      );
+    }
+
     function isAgent() {
       return isLoggedIn() &&
         exists(/databases/$(database)/documents/agents/$(uid()));
-    }
-
-    // Admin panel auth check — agents collection se bhi check karo
-    function isAdminViaAnyCollection() {
-      return isAdmin() || (
-        isLoggedIn() &&
-        exists(/databases/$(database)/documents/agents/$(uid()))
-      );
     }
 
     function isAdminOrAgent() {
@@ -34,17 +35,18 @@ service cloud.firestore {
     // USERS
     // ========================================================
     match /users/{userId} {
-      // Read: apna data + admin/agent
       allow read: if isOwner(userId) || isAdminOrAgent();
-
-      // Create: sirf apna account (register ke time)
-      allow create: if isLoggedIn() && isOwner(userId);
-
-      // Update: apna data ya admin
+      allow create: if request.auth != null;
       allow update: if isOwner(userId) || isAdmin();
-
-      // Delete: sirf admin
       allow delete: if isAdmin();
+    }
+
+    // User-specific notifications subcollection
+    match /users/{userId}/notifications/{notiId} {
+      allow read:   if isOwner(userId) || isAdmin();
+      allow create: if isAdmin() || isAgent();
+      allow update: if isOwner(userId) || isAdmin();
+      allow delete: if isOwner(userId) || isAdmin();
     }
 
     // ========================================================
@@ -63,10 +65,13 @@ service cloud.firestore {
     // ========================================================
     // GOVERNMENT JOBS
     // ========================================================
-    match /gov_jobs/{jobId} {
-      // Anyone can read (logged in or not   public data)
+    match /job_wizard_configs/{jobId} {
       allow read:   if true;
-      // Only admin can write
+      allow write:  if isAdmin();
+    }
+
+    match /gov_jobs/{jobId} {
+      allow read:   if true;
       allow write:  if isAdmin();
     }
 
@@ -78,25 +83,24 @@ service cloud.firestore {
       allow write:  if isAdmin();
     }
 
+    // ✅ NEW — Service wizard configs
+    match /service_wizard_configs/{serviceId} {
+      allow read:   if true;
+      allow write:  if isAdmin();
+    }
+
     // ========================================================
     // JOB APPLICATIONS
     // ========================================================
     match /applications/{appId} {
-      // User apni application padh sake
       allow read: if isLoggedIn() && (
         resource.data.userId == uid() || isAdminOrAgent()
       );
-
-      // User apni application create kare
       allow create: if isLoggedIn() && request.resource.data.userId == uid();
-
-      // Admin ya assigned agent update kare
       allow update: if isAdmin() ||
         (isAgent() && resource.data.assignedTo == uid());
-
       allow delete: if isAdmin();
 
-      // Chat messages subcollection
       match /messages/{msgId} {
         allow read:  if isLoggedIn() && (
           get(/databases/$(database)/documents/applications/$(appId)).data.userId == uid() ||
@@ -133,13 +137,10 @@ service cloud.firestore {
     // WALLET REQUESTS
     // ========================================================
     match /wallet_requests/{reqId} {
-      // User apni request dekhe
       allow read: if isLoggedIn() && (
         resource.data.userId == uid() || isAdmin()
       );
-      // User request create kare
       allow create: if isLoggedIn() && request.resource.data.userId == uid();
-      // Sirf admin approve/reject kare
       allow update: if isAdmin();
       allow delete: if isAdmin();
     }
@@ -151,9 +152,7 @@ service cloud.firestore {
       allow read: if isLoggedIn() && (
         resource.data.userId == uid() || isAdmin()
       );
-      // App internally create karta hai   apni transaction
       allow create: if isLoggedIn() && request.resource.data.userId == uid();
-      // Update sirf admin (corrections)
       allow update: if isAdmin();
       allow delete: if isAdmin();
     }
@@ -162,31 +161,19 @@ service cloud.firestore {
     // NOTIFICATIONS (Bell icon)
     // ========================================================
     match /notifications/{notiId} {
-      // Har logged-in user read kare (global notifications)
       allow read:   if isLoggedIn();
-      // Sirf admin create kare
       allow create: if isAdmin();
       allow update: if isLoggedIn() && (
-        // User sirf readBy ya isRead field update kare
         request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['readBy', 'isRead', 'readAt']) || isAdmin()
       );
       allow delete: if isAdmin();
     }
 
-    // User-specific notifications subcollection
-    match /users/{userId}/notifications/{notiId} {
-      allow read:   if isOwner(userId) || isAdmin();
-      allow create: if isAdmin() || isAgent();
-      allow update: if isOwner(userId) || isAdmin();
-      allow delete: if isOwner(userId) || isAdmin();
-    }
-
     // ========================================================
     // VOUCHERS / COUPONS
     // ========================================================
     match /vouchers/{voucherId} {
-      // Logged-in users read kare (apply karne ke liye check)
       allow read:   if isLoggedIn();
       allow write:  if isAdmin();
     }
@@ -201,7 +188,7 @@ service cloud.firestore {
     }
 
     // ========================================================
-    // BANNERS (Home screen slider)
+    // BANNERS
     // ========================================================
     match /banners/{bannerId} {
       allow read:  if true;
@@ -242,7 +229,7 @@ service cloud.firestore {
     }
 
     // ========================================================
-    // MASTER DATA (Eligibility questions etc.)
+    // MASTER DATA
     // ========================================================
     match /master_eligibility/{docId} {
       allow read:  if isLoggedIn();
@@ -255,7 +242,7 @@ service cloud.firestore {
     }
 
     // ========================================================
-    // APP CONFIG (Maintenance, Features, Referral)
+    // APP CONFIG
     // ========================================================
     match /app_config/{configId} {
       allow read:  if true;
@@ -266,27 +253,57 @@ service cloud.firestore {
     // ANALYTICS EVENTS
     // ========================================================
     match /analytics_events/{eventId} {
-      // User apna event log kare
       allow create: if isLoggedIn() && request.resource.data.userId == uid();
-      // Sirf admin padhe
       allow read:   if isAdmin();
       allow update, delete: if false;
     }
 
     // ========================================================
-    // ADMIN LOGS (token cleanup etc.)
+    // LOGS
     // ========================================================
     match /admin_logs/{logId} {
       allow read:   if isAdmin();
-      allow write:  if false; // Cloud Functions likhte hain
+      allow write:  if false;
     }
 
-    // ========================================================
-    // NOTIFICATION LOGS
-    // ========================================================
+    match /audit_logs/{logId} {
+      allow read:   if isAdmin();
+      allow create: if isLoggedIn();
+      allow update: if false;
+      allow delete: if false;
+    }
+
     match /notification_logs/{logId} {
       allow read:   if isAdmin();
       allow write:  if isAdmin();
+    }
+
+    // ========================================================
+    // MEMBERSHIP
+    // ========================================================
+    match /user_memberships/{userId} {
+      allow read:   if isLoggedIn() && (isOwner(userId) || isAdmin());
+      // SEC-01 Fix: create only by owner OR admin — not any logged-in user
+      allow create: if isLoggedIn() && (isOwner(userId) || isAdmin());
+      allow update: if isLoggedIn() && (isOwner(userId) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /user_memberships/{userId}/monthly_usage/{month} {
+      allow read:  if isLoggedIn() && (isOwner(userId) || isAdmin());
+      allow write: if isLoggedIn() && (isOwner(userId) || isAdmin());
+    }
+
+    match /user_memberships/{userId}/history/{historyId} {
+      allow read:   if isLoggedIn() && (isOwner(userId) || isAdmin());
+      allow create: if isLoggedIn() && (isOwner(userId) || isAdmin());
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /membership_overrides/{userId} {
+      allow read:  if isLoggedIn() && (isOwner(userId) || isAdmin());
+      allow write: if isAdmin();
     }
 
   }

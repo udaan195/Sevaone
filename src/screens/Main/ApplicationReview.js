@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import { 
   View, Text, StyleSheet, ScrollView, TouchableOpacity, 
   Modal, TextInput, Alert, ActivityIndicator, SafeAreaView, Image 
@@ -6,15 +7,16 @@ import {
 import { db, auth } from '../../api/firebaseConfig';
 import { 
   doc, getDoc, collection, addDoc, 
-  increment, serverTimestamp, updateDoc, query, where, getDocs, runTransaction 
+  increment, serverTimestamp, updateDoc, query, where, getDocs 
 } from 'firebase/firestore';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { getMembershipDiscount, consumeFreeApp, incrementMonthlyUsage, checkMonthlyLimit } from '../../utils/membershipManager';
 import * as ImagePicker from 'expo-image-picker';
 import * as Crypto from 'expo-crypto';
 import Constants from 'expo-constants';
 
 export default function ApplicationReview({ route, navigation }) {
-  const { formData, feeDetails, jobId, jobTitle, documents } = route.params || {}; 
+  const { formData, feeDetails, jobId, jobTitle, documents, serviceType = 'gov_jobs', category = 'latest-jobs' } = route.params || {}; 
 
   // --- 🛠️ Fee Extraction ---
   const govFee = Number(feeDetails?.official || 0); 
@@ -23,6 +25,11 @@ export default function ApplicationReview({ route, navigation }) {
 
   const [couponCode, setCouponCode] = useState('');
   const [discount, setDiscount] = useState(0);
+  const [membershipDiscount, setMembershipDiscount] = useState(0);
+  const [membershipInfo, setMembershipInfo] = useState(null);
+  const [isMembershipFree, setIsMembershipFree]   = useState(false);
+  const [appLimitReached, setAppLimitReached]     = useState(false);
+  const [appLimitInfo, setAppLimitInfo]           = useState(null);
   const [isCouponApplied, setIsCouponApplied] = useState(false);
   const [couponLoading, setCouponLoading] = useState(false);
   const [finalTotal, setFinalTotal] = useState(initialTotal);
@@ -43,9 +50,150 @@ export default function ApplicationReview({ route, navigation }) {
   const CLOUDINARY_URL = "https://api.cloudinary.com/v1_1/dxuurwexl/image/upload";
   const UPLOAD_PRESET = "edusphere_uploads";
 
+  // ── Fresh membership on every screen focus — direct Firestore ──
+  useFocusEffect(
+    useCallback(() => {
+      if (!userId || !serviceFee) return;
+
+      // Reset
+      setMembershipDiscount(0);
+      setMembershipInfo(null);
+      setIsMembershipFree(false);
+      setAppLimitReached(false);
+      setAppLimitInfo(null);
+      setFinalTotal(govFee + serviceFee);
+
+      // Direct Firestore fetch — bypass any module-level cache
+      const fetchFresh = async () => {
+        const svcType = serviceType || 'gov_jobs';
+        const svcCat  = category    || 'latest-jobs';
+        try {
+          const { getDoc, doc } = await import('firebase/firestore');
+          const { db } = await import('../../api/firebaseConfig');
+
+          // Fetch membership + config in parallel
+          const [memSnap, cfgSnap] = await Promise.all([
+            getDoc(doc(db, 'user_memberships', userId)),
+            getDoc(doc(db, 'app_config', 'membership_master')),
+          ]);
+
+          if (!memSnap.exists()) return;
+          const mem = memSnap.data();
+          if (!mem.isActive) return;
+
+          // ✅ LIMIT CHECK — but free apps bypass limit
+          const rawLimit    = mem.lockedBenefits?.appLimit;
+          const appLimit    = rawLimit != null ? Number(rawLimit) : -1;
+          const freeAppsLB  = mem.lockedBenefits?.freeApps != null ? Number(mem.lockedBenefits.freeApps) : 0;
+          const mkNow  = `${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,'0')}`;
+          const usSnap2 = await getDoc(doc(db, 'user_memberships', userId, 'monthly_usage', mkNow));
+          const usedNow = usSnap2.exists() ? (usSnap2.data().apps_used || 0) : 0;
+          const freeUsedNow = usSnap2.exists() ? (usSnap2.data().free_used || 0) : 0;
+          const freeLeftNow = Math.max(0, freeAppsLB - freeUsedNow);
+
+          if (appLimit > 0) {
+            if (usedNow >= appLimit) {
+              // Limit reached — but free apps bypass it
+              if (freeLeftNow > 0) {
+                // Free apps available — allow
+              } else {
+                setAppLimitReached(true);
+                setAppLimitInfo({ used: usedNow, limit: appLimit, remaining: 0 });
+                return;
+              }
+            } else {
+              setAppLimitInfo({ used: usedNow, limit: appLimit, remaining: appLimit - usedNow });
+            }
+          }
+
+          const cfg       = cfgSnap.exists() ? cfgSnap.data() : {};
+          const isEnabled = cfg.isEnabled ?? false;
+          const planKey   = mem.plan || 'basic';
+          const lb      = mem.lockedBenefits;
+          const isTrial = mem.isTrial === true;
+
+          // Toggle OFF:
+          //   Trial user  → discount band
+          //   Paid user   → discount milta rahe (lockedBenefits se)
+          if (!isEnabled && isTrial) return;
+          if (!isEnabled && !isTrial && !lb) return; // paid but no lockedBenefits
+
+          // Get config — locked for paid, live for trial
+          let discountPct, freeApps, coverage;
+          if (!isTrial && lb) {
+            discountPct = lb.discount  ?? 0;
+            freeApps    = lb.freeApps  != null ? Number(lb.freeApps)  : 0;
+            coverage    = lb.coverage  || {};
+          } else {
+            const cfgPlan = (cfg.plans?.[planKey]) || { discount:10, freeApps:0 };
+            const DEFAULT_COV = {
+              basic:  { gov_jobs:{ enabled:true, categories:{ 'latest-jobs':true,'admit-card':false,'result':false,'answer-key':false }}, citizen_services:{enabled:true}, govt_schemes:{enabled:false}, students:{enabled:true}, others:{enabled:false} },
+              silver: { gov_jobs:{ enabled:true, categories:{ 'latest-jobs':true,'admit-card':false,'result':false,'answer-key':false }}, citizen_services:{enabled:true}, govt_schemes:{enabled:true}, students:{enabled:true}, others:{enabled:true} },
+              gold:   { gov_jobs:{ enabled:true, categories:{ 'latest-jobs':true,'admit-card':false,'result':false,'answer-key':false }}, citizen_services:{enabled:true}, govt_schemes:{enabled:true}, students:{enabled:true}, others:{enabled:true} },
+            };
+            discountPct = cfgPlan.discount  || 0;
+            freeApps    = cfgPlan.freeApps   != null ? Number(cfgPlan.freeApps) : 0;
+            coverage    = (cfg.coverage?.[planKey]) || DEFAULT_COV[planKey] || {};
+          }
+
+          const planName  = lb?.planName  || planKey;
+          const planEmoji = lb?.planEmoji || '⭐';
+
+          // Coverage check — fallback to DEFAULT if empty
+          const DEFAULT_COV_AR = {
+            basic:  { gov_jobs:{enabled:true}, citizen_services:{enabled:true}, govt_schemes:{enabled:false}, students:{enabled:true}, others:{enabled:false} },
+            silver: { gov_jobs:{enabled:true}, citizen_services:{enabled:true}, govt_schemes:{enabled:true},  students:{enabled:true}, others:{enabled:true}  },
+            gold:   { gov_jobs:{enabled:true}, citizen_services:{enabled:true}, govt_schemes:{enabled:true},  students:{enabled:true}, others:{enabled:true}  },
+          };
+          const effectiveCoverage = (Object.keys(coverage).length > 0) ? coverage : (DEFAULT_COV_AR[planKey] || {});
+          const svcCov = effectiveCoverage[svcType];
+          // If no coverage config — allow discount
+          if (svcCov && svcCov.enabled === false) return;
+          if (svcCat && svcCov?.categories && svcCov.categories[svcCat] === false) return;
+
+          // Monthly usage
+          const now     = new Date();
+          const mk      = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+          const usSnap  = await getDoc(doc(db, 'user_memberships', userId, 'monthly_usage', mk));
+          const usage   = usSnap.exists() ? usSnap.data() : {};
+          const freeUsed = Number(usage.free_used || 0);
+          const appsUsed = Number(usage.apps_used || 0);
+
+          // Step 1: Free apps
+          if (freeApps > 0) {
+            const freeLeft = Math.max(0, freeApps - freeUsed);
+            if (freeLeft > 0) {
+              setMembershipDiscount(serviceFee);
+              setMembershipInfo({ discount:serviceFee, isFree:true, freeAppsLeft:freeLeft, discountPct:100, planName, planEmoji });
+              setIsMembershipFree(true);
+              setFinalTotal(govFee);
+              return;
+            }
+          }
+
+          // Step 2: App limit — already checked above before discount logic
+
+          // Step 3: Discount
+          if (discountPct <= 0) return;
+          const disc = Math.floor(serviceFee * discountPct / 100);
+          if (disc > 0) {
+            setMembershipDiscount(disc);
+            setMembershipInfo({ discount:disc, isFree:false, freeAppsLeft:0, discountPct, planName, planEmoji });
+            setIsMembershipFree(false);
+            setFinalTotal(govFee + serviceFee - disc);
+          }
+        } catch (e) {
+          console.log('Fresh membership fetch error:', e.message);
+        }
+      };
+
+      fetchFresh();
+    }, [userId, govFee, serviceFee])
+  );
+
   useEffect(() => {
     if (userId) fetchWalletInfo();
-    setFinalTotal(govFee + serviceFee);
+    // ✅ FIX: setFinalTotal yahan nahi — useFocusEffect se set hoti hai
   }, [userId, govFee, serviceFee]);
 
   const fetchWalletInfo = async () => {
@@ -152,18 +300,9 @@ export default function ApplicationReview({ route, navigation }) {
         return Alert.alert("Error", "Discount calculate nahi ho saka.");
       }
 
-      // ✅ 6. Atomic transaction — race condition fix
-      await runTransaction(db, async (tx) => {
-        const freshSnap = await tx.get(voucherRef);
-        if (!freshSnap.exists()) throw new Error('Voucher not found');
-        const freshData  = freshSnap.data();
-        const freshCount = freshData.usedCount  || 0;
-        const freshLimit = freshData.usageLimit || 999;
-        if (!freshData.isActive)           throw new Error('Voucher inactive');
-        if (freshCount >= freshLimit)      throw new Error('Limit reached');
-        if (freshData.expiryDate && new Date(freshData.expiryDate) < new Date())
-                                           throw new Error('Expired');
-        tx.update(voucherRef, { usedCount: increment(1) });
+      // ✅ 6. Increment usedCount in Firestore
+      await updateDoc(voucherRef, {
+        usedCount: increment(1)
       });
 
       setDiscount(calculatedDiscount);
@@ -212,6 +351,11 @@ export default function ApplicationReview({ route, navigation }) {
         remark: `Paid for ${jobTitle}`, status: 'success', timestamp: serverTimestamp()
       });
       setIsPaid(true); setSelectedMethod('wallet'); setPaymentModal(false); setPinModal(false);
+      // Consume membership credit
+      if (membershipInfo && userId) {
+        if (isMembershipFree) consumeFreeApp(userId).catch(() => {});
+        else incrementMonthlyUsage(userId).catch(() => {});
+      }
     } catch (e) { Alert.alert("Error", "Transaction failed."); }
     finally { setIsSubmitting(false); }
   };
@@ -263,12 +407,38 @@ export default function ApplicationReview({ route, navigation }) {
   const handleUPIFinish = () => {
     if (!screenshot) return Alert.alert("Required", "Screenshot missing!");
     setIsPaid(true); setSelectedMethod('upi'); setUpiModal(false);
+    // BUG-01 Fix: Track usage on UPI payment too
+    if (membershipInfo && userId) {
+      if (isMembershipFree) consumeFreeApp(userId).catch(() => {});
+      else incrementMonthlyUsage(userId).catch(() => {});
+    }
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={{ paddingBottom: 100 }} showsVerticalScrollIndicator={false}>
         <View style={styles.noteBox}><Text style={styles.noteText}>Review your data carefully before paying.</Text></View>
+
+        {/* App Limit Reached */}
+        {appLimitReached && (
+          <View style={{ backgroundColor:'#FEF2F2', borderRadius:14, padding:14, margin:16, marginBottom:0, borderLeftWidth:4, borderLeftColor:'#DC2626' }}>
+            <Text style={{ fontSize:14, fontWeight:'900', color:'#DC2626' }}>
+              ⛔ Monthly Limit Reached
+            </Text>
+            <Text style={{ fontSize:12, fontWeight:'600', color:'#7F1D1D', marginTop:4 }}>
+              {`${appLimitInfo?.used}/${appLimitInfo?.limit} applications is mahine use ho gaye. 1st ko reset hoga. Abhi bina discount ke apply kar sakte ho.`}
+            </Text>
+          </View>
+        )}
+
+        {/* Limit info (not reached) */}
+        {!appLimitReached && appLimitInfo && appLimitInfo.limit > 0 && (
+          <View style={{ backgroundColor:'#F0FDF4', borderRadius:12, padding:10, margin:16, marginBottom:0, flexDirection:'row', alignItems:'center', gap:8 }}>
+            <Text style={{ fontSize:12, fontWeight:'700', color:'#166534' }}>
+              ✅ {appLimitInfo.remaining} application{appLimitInfo.remaining !== 1 ? 's' : ''} remaining this month ({appLimitInfo.used}/{appLimitInfo.limit})
+            </Text>
+          </View>
+        )}
         <View style={styles.receiptCard}>
           <View style={styles.watermarkBox}><Text style={styles.watermark}>SewaOne</Text></View>
           <Text style={styles.receiptTitle}>{jobTitle}</Text>
@@ -287,11 +457,43 @@ export default function ApplicationReview({ route, navigation }) {
             </View>
           )}
 
-          <View style={styles.infoRow}><Text style={styles.infoKey}>Official Job Fee:</Text><Text style={styles.infoVal}>₹{govFee}</Text></View>
-          <View style={styles.infoRow}><Text style={styles.infoKey}>SewaOne Service Fee:</Text><Text style={styles.infoVal}>₹{serviceFee}</Text></View>
-          {isCouponApplied && <View style={styles.infoRow}><Text style={[styles.infoKey, {color:'#10B981'}]}>Discount:</Text><Text style={[styles.infoVal, {color:'#10B981'}]}>-₹{discount}</Text></View>}
+          <View style={styles.infoRow}>
+            <Text style={styles.infoKey}>Official Job Fee:</Text>
+            <Text style={styles.infoVal}>₹{govFee}</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Text style={styles.infoKey}>SewaOne Service Fee:</Text>
+            <Text style={styles.infoVal}>₹{serviceFee}</Text>
+          </View>
+          {membershipDiscount > 0 && (
+            <View style={styles.infoRow}>
+              <View style={{flexDirection:'row', alignItems:'center', gap:6, flex:1}}>
+                <Text style={[styles.infoKey, {color:'#10B981'}]}>
+                  {membershipInfo?.planEmoji} {membershipInfo?.planName}
+                  {isMembershipFree ? ' — FREE App' : ` — ${membershipInfo?.discountPct}% off`}
+                </Text>
+              </View>
+              <Text style={[styles.infoVal, {color:'#10B981', fontWeight:'900'}]}>
+                -₹{membershipDiscount}
+              </Text>
+            </View>
+          )}
+          {isCouponApplied && (
+            <View style={styles.infoRow}>
+              <Text style={[styles.infoKey, {color:'#10B981'}]}>Coupon Discount:</Text>
+              <Text style={[styles.infoVal, {color:'#10B981'}]}>-₹{discount}</Text>
+            </View>
+          )}
           <View style={styles.divider} />
-          <View style={styles.totalRow}><Text style={styles.totalLabel}>Payable Amount</Text><Text style={styles.totalVal}>₹{finalTotal}</Text></View>
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Payable Amount</Text>
+            <Text style={styles.totalVal}>₹{finalTotal}</Text>
+          </View>
+          {membershipDiscount > 0 && (
+            <Text style={{fontSize:11, color:'#10B981', fontWeight:'700', textAlign:'right', marginTop:4}}>
+              You saved ₹{membershipDiscount} with {membershipInfo?.planName} plan 💰
+            </Text>
+          )}
         </View>
 
         {!isPaid && (
@@ -324,7 +526,7 @@ export default function ApplicationReview({ route, navigation }) {
       <Modal visible={upiModal} transparent>
         <View style={styles.overlay}><View style={styles.upiCard}>
             <Text style={styles.sheetTitle}>Scan & Pay</Text>
-            <Image source={{ uri: `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(`upi://pay?pa=75186453-2@axl&pn=SewaOne&am=${finalTotal}&cu=INR`)}` }} style={styles.qr} />
+            <Image source={{ uri: `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(`upi://pay?pa=7518640453-2@axl&pn=SewaOne&am=${finalTotal}&cu=INR`)}` }} style={styles.qr} />
             <Text style={{fontSize: 12, fontWeight: 'bold', color: '#003366', marginBottom: 10}}>Payable: ₹{finalTotal}</Text>
             <TextInput style={styles.input} placeholder="UTR / Ref Number" onChangeText={setUtr} />
             <TouchableOpacity style={styles.uploadBox} onPress={pickImage}><Text>{screenshot ? "✅ Uploaded" : "Upload Proof Screenshot"}</Text></TouchableOpacity>

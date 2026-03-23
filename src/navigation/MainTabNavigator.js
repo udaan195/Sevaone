@@ -17,6 +17,8 @@ import EditProfile from '../screens/Main/EditProfile'; // ✨ EditProfile import
 import PrivacyPolicy from '../screens/Main/PrivacyPolicy';
 import ReferEarn from '../screens/Main/ReferEarn';
 import ChangePasswordScreen from '../screens/Main/ChangePasswordScreen';
+import MembershipScreen        from '../screens/Main/MembershipScreen';
+import MembershipHistoryScreen  from '../screens/Main/MembershipHistoryScreen';
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator(); // ✨ Stack Navigator banaya
 
@@ -53,6 +55,16 @@ options={{title: 'Refer & Earn'}} />
 name="ApplicationsScreen"
 component={ApplicationsScreen}
 options={{title: 'Application Screen'}}
+/>
+<Stack.Screen
+  name="Membership"
+  component={MembershipScreen}
+  options={{ headerShown: false }}
+/>
+<Stack.Screen
+  name="MembershipHistory"
+  component={MembershipHistoryScreen}
+  options={{ headerShown: false }}
 />
 <Stack.Screen
 name="ChangePassword"
